@@ -751,6 +751,9 @@ export async function createWorkInFlight({ dataDir, getProjects = async () => []
   }
 
   async function assemble(scanned, { projectId, includeFiles, maskPrivate }) {
+    // The job is snapshotted before any grouping is read. Assembly awaits the ledger after the repos are built, so a
+    // job finishing in that gap would otherwise be shown as done next to the groupings from before it wrote them.
+    const jobView = job ? clone(job) : null;
     const errors = [...scanned.errors];
     let entries = scanned.entries;
     if (projectId !== null) {
@@ -807,7 +810,7 @@ export async function createWorkInFlight({ dataDir, getProjects = async () => []
     // An agent-facing read drops the per-project bullets: they have no size budget. The MCP adapter forwards no
     // standing at all today (scripts/mcp-server.mjs overview()), so this is the core's boundary, not the shape an agent sees.
     if (standingView && maskPrivate) standingView.byRepo = {};
-    return { version: VERSION, scannedAt: scanned.scannedAt, repos, totals, standing: standingView, job: job ? clone(job) : null, settings: clone(state.settings), disclosure: disclosureFor(state.settings), privateDefaults: [...DEFAULT_PRIVATE_SEGMENTS], errors: [...new Set([...problems, ...keyErrors, ...errors])].slice(0, limit.errors) };
+    return { version: VERSION, scannedAt: scanned.scannedAt, repos, totals, standing: standingView, job: jobView, settings: clone(state.settings), disclosure: disclosureFor(state.settings), privateDefaults: [...DEFAULT_PRIVATE_SEGMENTS], errors: [...new Set([...problems, ...keyErrors, ...errors])].slice(0, limit.errors) };
   }
 
   async function read({ maxAgeMs = 20000, projectId = null, includeFiles = true, maskPrivate = false } = {}) {
