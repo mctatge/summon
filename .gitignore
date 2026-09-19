@@ -1,0 +1,15 @@
+node_modules/
+dist/
+release/
+native/summon-context
+native/summon-transcribe
+native/summon-fn-key
+.DS_Store
+*.log
+.env*
+!.env.example
+local-config.json
+# Machine-local agent config and notes
+CLAUDE.local.md
+.claude/settings.local.json
+.claude/worktrees/

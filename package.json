@@ -1,0 +1,119 @@
+{
+  "name": "summon",
+  "version": "0.6.1",
+  "private": true,
+  "description": "A local context and control plane for a multi-agent workstation: working context, agent sessions, work in flight, usage and memory over MCP",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mctatge/summon.git"
+  },
+  "homepage": "https://github.com/mctatge/summon#readme",
+  "bugs": {
+    "url": "https://github.com/mctatge/summon/issues"
+  },
+  "author": "Summon contributors",
+  "type": "module",
+  "main": "src/main/main.mjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build:native": "node scripts/build-native.mjs",
+    "build": "npm run build:native && vite build",
+    "start": "electron .",
+    "test": "node --test tests/*.test.mjs tests/core*.mjs native/wake/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && electron-builder --mac dir",
+    "mcp": "node scripts/mcp-server.mjs",
+    "sessions": "node scripts/agent-sessions.mjs",
+    "flight": "node scripts/work-in-flight.mjs"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "electron": "44.4.0",
+    "electron-builder": "26.15.3",
+    "lucide-react": "1.46.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "typescript": "^5.9.3",
+    "vite": "8.3.0"
+  },
+  "build": {
+    "appId": "com.summon.companion",
+    "productName": "Summon",
+    "directories": {
+      "output": "release"
+    },
+    "afterSign": "scripts/after-sign.mjs",
+    "files": [
+      "dist/**",
+      "src/main/**",
+      "src/core/**",
+      "scripts/mcp-server.mjs",
+      "scripts/summon-hook.mjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/summon-context",
+        "to": "summon-context"
+      },
+      {
+        "from": "scripts/claude-login.command",
+        "to": "claude-login.command"
+      },
+      {
+        "from": "scripts/codex-login.command",
+        "to": "codex-login.command"
+      },
+      {
+        "from": "scripts/summon-hook.mjs",
+        "to": "summon-hook.mjs"
+      },
+      {
+        "from": "scripts/mcp-server.mjs",
+        "to": "mcp-server.mjs"
+      },
+      {
+        "from": "native/wake",
+        "to": "wake",
+        "filter": [
+          "wake-worker.py",
+          "README.md",
+          "licenses/**"
+        ]
+      },
+      {
+        "from": "native/summon-transcribe",
+        "to": "summon-transcribe"
+      },
+      {
+        "from": "native/speaker",
+        "to": "speaker",
+        "filter": [
+          "speaker-worker.py"
+        ]
+      },
+      {
+        "from": "native/summon-fn-key",
+        "to": "summon-fn-key"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": "dir",
+      "identity": "-",
+      "icon": "assets/icon.icns",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Summon transcribes your voice commands locally when you enable the microphone.",
+        "NSAppleEventsUsageDescription": "Summon opens the applications you request.",
+        "NSDesktopFolderUsageDescription": "Summon records incoming file names and locations on your Desktop.",
+        "NSDownloadsFolderUsageDescription": "Summon helps you find downloaded files and follow their filing history.",
+        "NSDocumentsFolderUsageDescription": "Summon reads file metadata in the configured Automatic Filing destinations."
+      },
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    }
+  }
+}
