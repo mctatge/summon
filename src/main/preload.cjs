@@ -9,7 +9,8 @@ contextBridge.exposeInMainWorld('summon',{
   chooseModel:invoke('choose-model'),openLink:invoke('open-link'),transcribe:invoke('transcribe'),ask:invoke('ask'),
   workInFlight:invoke('work-in-flight'),groupWork:invoke('work-in-flight-group'),workInFlightSettings:invoke('work-in-flight-settings'),revealPlace:invoke('work-in-flight-reveal'),onWorkInFlight:subscribe('summon:work-in-flight'),
   markStanding:invoke('work-in-flight-mark'),
-  agentSessions:invoke('agent-sessions'),openAgentSession:invoke('agent-session-open'),agentSessionsSettings:invoke('agent-sessions-settings'),onOpenPanel:subscribe('summon:open-panel'),launchAgent:invoke('agent-launch'),installClaudeHooks:invoke('claude-hooks-install'),claudeHooksStatus:invoke('claude-hooks-status'),
+  visualRepository:invoke('visual-repository'),saveVisualGoal:invoke('visual-goal-save'),
+  agentSessions:invoke('agent-sessions'),agentSessionTrace:invoke('agent-session-trace'),openAgentSession:invoke('agent-session-open'),agentSessionsSettings:invoke('agent-sessions-settings'),onOpenPanel:subscribe('summon:open-panel'),launchAgent:invoke('agent-launch'),installClaudeHooks:invoke('claude-hooks-install'),claudeHooksStatus:invoke('claude-hooks-status'),
   usage:invoke('usage'),usageSettings:invoke('usage-settings'),
   voiceState:invoke('voice-state'),showWindow:invoke('show-window'),showVoiceWidget:invoke('show-voice-widget'),onVoiceMode:subscribe('summon:voice-mode'),onUpdate:subscribe('summon:update'),onVoiceToggle:subscribe('summon:voice-toggle'),onEnrollSpeaker:subscribe('summon:enroll-speaker')
 });

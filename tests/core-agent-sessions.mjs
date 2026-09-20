@@ -67,6 +67,38 @@ async function fixture(t, { lists, wrap, places = [], projects = [], privatePath
 }
 const byKey = view => Object.fromEntries(view.groups.flatMap(group => group.sessions.map(item => [item.key, item])));
 
+test('trace resolves known session identities, including Claude desktop CLI joins, without exposing ids or payloads', async t => {
+  const cli = uuid(701), terminal = uuid(702), codex = uuid(703);
+  const desktopKey = 'claude:desktop:local_trace-desktop';
+  const terminalKey = `claude:terminal:${terminal}`;
+  const codexKey = `codex:desktop:${codex}`;
+  const lists = {
+    claude: [raw('claude', 'local_trace-desktop', { hookSessionId: cli, activity: 'working', live: true }), raw('claude', terminal, { surface: 'terminal', activity: 'working', live: true })],
+    codex: [raw('codex', codex, { activity: 'working', live: true })],
+    cursor: [raw('cursor', uuid(704), { activity: 'working', live: true })],
+  };
+  const { svc } = await fixture(t, { lists });
+  svc.noteHook({ app: 'claude', sessionId: cli, event: 'PreToolUse', toolName: 'Edit', prompt: 'SECRET', tool_input: { file: 'SECRET' } });
+  svc.noteHook({ app: 'claude', sessionId: terminal, event: 'PostToolUse', toolName: 'Bash' });
+  svc.noteHook({ app: 'codex', sessionId: codex, event: 'agent-turn-complete' });
+  assert.throws(() => svc.trace(desktopKey), /no longer in the list/);
+  const view = await svc.read();
+  const desktop = byKey(view)[desktopKey];
+  assert.equal(desktop.repoId, null, 'hook traces remain available without a repository match');
+  assert.ok(!Object.hasOwn(desktop, 'hookSessionId'));
+  assert.equal(svc.trace(desktopKey).events[0].event, 'PreToolUse');
+  assert.equal(svc.trace(desktopKey).sessionKey, desktopKey);
+  assert.equal(svc.trace(terminalKey).events[0].event, 'PostToolUse');
+  assert.equal(svc.trace(codexKey).events[0].event, 'agent-turn-complete');
+  assert.ok(!JSON.stringify(svc.trace(desktopKey)).includes('SECRET'));
+  assert.deepEqual(svc.trace(`cursor:ide:${uuid(704)}`), { sessionKey: `cursor:ide:${uuid(704)}`, events: [], truncated: false });
+  // A valid-looking key is not a capability: it must have appeared in a recent reader snapshot.
+  assert.throws(() => svc.trace(`claude:terminal:${cli}`), /no longer in the list/);
+  lists.claude = [];
+  await svc.read({ maxAgeMs: 0 });
+  assert.throws(() => svc.trace(desktopKey), /no longer in the list/);
+});
+
 test('sessions are grouped in order with plain words and sorted by what matters', async t => {
   const lists = {
     claude: [

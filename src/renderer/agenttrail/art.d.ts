@@ -1,0 +1,37 @@
+import type { BufferGeometry, Group, Material, Mesh, MeshStandardMaterial, MeshStandardMaterialParameters, Object3D } from 'three';
+
+export type Point = readonly [number, number, number];
+export type ArtMaterial = number | Material;
+export const colors: { cream: number; white: number; wood: number; trim: number; blue: number; dark: number; gold: number; green: number; coral: number };
+export function random(): number;
+/** Release shared art caches after every using scene stops and releases its owned copies. */
+export function resetArtCaches(): void;
+export function material(color: number, extra?: MeshStandardMaterialParameters): MeshStandardMaterial;
+export function mesh(parent: Object3D, geometry: BufferGeometry, mat: ArtMaterial, x?: number, y?: number, z?: number): Mesh;
+export function box(parent: Object3D, w: number, h: number, d: number, mat: ArtMaterial, x?: number, y?: number, z?: number, radius?: number): Mesh;
+export function ball(parent: Object3D, sx: number, sy: number, sz: number, mat: ArtMaterial, x?: number, y?: number, z?: number): Mesh;
+export function cylinder(parent: Object3D, topRadius: number, bottomRadius: number, height: number, mat: ArtMaterial, x?: number, y?: number, z?: number): Mesh;
+export function torus(parent: Object3D, radius: number, tubeRadius: number, mat: ArtMaterial, x?: number, y?: number, z?: number): Mesh;
+export function group(parent: Object3D, x?: number, y?: number, z?: number): Group;
+export function rod(parent: Object3D, from: Point, to: Point, radius: number, mat: ArtMaterial): Mesh;
+export function tube(parent: Object3D, points: readonly Point[], radius: number, mat: ArtMaterial): Mesh;
+export function wood(): MeshStandardMaterial;
+export function tile(): MeshStandardMaterial;
+export function ground(): MeshStandardMaterial;
+export function contact(parent: Object3D, x: number, z: number, sx: number, sz: number, opacity?: number): Mesh;
+export function plaque(parent: Object3D, text: string, width?: number, height?: number, x?: number, y?: number, z?: number, background?: string, foreground?: string): Mesh;
+export function counter(parent: Object3D, x: number, z: number, width?: number, depth?: number): Group;
+export function plate(parent: Object3D, x?: number, y?: number, z?: number): Group;
+export function ingredient(parent: Object3D, type: string, x?: number, y?: number, z?: number, scale?: number): Group;
+export function board(parent: Object3D, x?: number, z?: number): Group;
+export function stove(parent: Object3D, x?: number, z?: number): Group;
+export function pot(parent: Object3D, x?: number, y?: number, z?: number): Group;
+export function sink(parent: Object3D, x?: number, z?: number): Group;
+export function bell(parent: Object3D, x?: number, y?: number, z?: number): Group;
+export function recipe(parent: Object3D, x?: number, y?: number, z?: number): Group;
+export function barrel(parent: Object3D, x: number, z: number, scale?: number): Group;
+export function plant(parent: Object3D, x: number, z: number, scale?: number, flowers?: boolean): Group;
+export function crate(parent: Object3D, x: number, y: number, z: number): Group;
+export function wheel(parent: Object3D, x: number, y: number, z: number): Group;
+export function bunting(parent: Object3D, from: Point, to: Point): void;
+export function balloonBunch(parent: Object3D, x: number, z: number): Group;

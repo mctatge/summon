@@ -1,0 +1,69 @@
+.vw-main-kitchen .vw-stage-heading { margin-bottom: 16px; }
+.vw-main-kitchen .vw-focus-strip { margin: 0 0 12px; }
+.ks-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; }
+.ks-room-state { display: flex; align-items: center; gap: 8px; color: var(--ink-secondary); font-size: 11px; }
+.ks-room-state > svg { color: var(--petrol); }
+.ks-room-state > strong { font-weight: 600; color: var(--ink); }
+.ks-room-state > span { padding-left: 8px; border-left: 1px solid var(--receipt-line); }
+.ks-controls { display: flex; gap: 6px; }
+.ks-stage { height: clamp(330px, 49vh, 540px); position: relative; overflow: hidden; border: 1px solid #d9cbb5; border-radius: 10px; background: #f0dfc5; }
+.ks-canvas-host { position: absolute; inset: 0; }
+.ks-canvas-host canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+.ks-camera-hint { position: absolute; pointer-events: none; bottom: 12px; left: 16px; font-size: 10px; line-height: 1.5; color: #645344; padding: 5px 8px; border-radius: 4px; background: #fff8e6db; }
+.ks-camera-hint > span { padding: 0 5px; }
+.ks-motion-badge { position: absolute; top: 12px; right: 12px; background: #fff8e6ed; color: #645344; font-size: 10px; padding: 7px 10px; border-radius: 4px; pointer-events: none; }
+.ks-empty-note { position: absolute; left: 16px; top: 16px; padding: 12px 16px; background: #fff8e6ed; color: #645344; border-radius: 5px; display: flex; flex-direction: column; gap: 5px; max-width: calc(100% - 32px); pointer-events: none; }
+.ks-empty-note > strong { font-size: 13px; color: #493c30; }
+.ks-empty-note > span { font-size: 11px; line-height: 1.5; }
+.ks-fallback { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 12px; align-items: center; justify-content: center; padding: 28px; text-align: center; background: var(--paper-inset); color: var(--ink-secondary); }
+.ks-fallback > strong { font-size: 16px; color: var(--ink); }
+.ks-fallback > p { max-width: 400px; font-size: 12px; line-height: 1.6; }
+.ks-failed .ks-canvas-host { visibility: hidden; }
+.ks-pages { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; font-size: 11px; color: var(--ink-secondary); }
+.ks-pages > div { display: flex; gap: 10px; align-items: center; }
+.ks-tickets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; }
+.ks-session { display: flex; flex-direction: column; align-items: stretch; gap: 5px; text-align: left; background: var(--paper-raised); border: 1px solid var(--control-line); border-radius: 5px; padding: 12px 14px; color: var(--ink); min-width: 0; position: relative; }
+.ks-session:before { content: ''; position: absolute; top: -1px; left: 14px; width: 26px; height: 3px; border-radius: 0 0 2px 2px; background: var(--chef-color); }
+.ks-session:hover { border-color: var(--petrol); }
+.ks-session[aria-pressed=true] { border-color: var(--petrol); background: var(--petrol-wash); }
+.ks-ticket-header { display: flex; align-items: center; gap: 7px; color: var(--ink-secondary); font-size: 10px; }
+.ks-ticket-header > .vw-session-dot { margin-left: auto; }
+.ks-session-project { display: flex; align-items: center; gap: 4px; margin-top: 4px; color: var(--ink-secondary); font-size: 10px; font-weight: 600; line-height: 1.4; min-width: 0; }
+.ks-session-project > svg { flex-shrink: 0; }
+.ks-session-project > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ks-chef-number { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; color: var(--chef-color); background: var(--paper); border: 1px solid currentColor; font-size: 10px; font-weight: 650; }
+.ks-session > strong { margin-top: 4px; line-height: 1.4; font-size: 12px; font-weight: 550; overflow-wrap: anywhere; }
+.ks-session-state { font-size: 11px; color: var(--petrol); margin-top: 4px; }
+.ks-session.needs-you .ks-session-state, .ks-session.interrupted .ks-session-state { color: var(--warning); }
+.ks-session.failed .ks-session-state { color: var(--error); }
+.ks-session.quiet .ks-session-state, .ks-session.unknown .ks-session-state, .ks-session.open .ks-session-state { color: var(--ink-secondary); }
+.ks-session-detail, .ks-session-branch { font-size: 10px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+.ks-session-branch { margin-top: auto; padding-top: 5px; opacity: .8; }
+.ks-selected-detail { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--receipt-line); }
+.ks-selected-detail > div { min-width: 0; }
+.ks-selected-detail strong { display: block; margin-top: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.ks-selected-detail p { margin-top: 5px; font-size: 11px; color: var(--ink-secondary); line-height: 1.5; }
+.ks-selected-location { display: grid; gap: 4px; margin: 8px 0 0; font-size: 10px; line-height: 1.5; }
+.ks-selected-location > div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.ks-selected-location dt { color: var(--ink-secondary); }
+.ks-selected-location dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
+.ks-selected-detail > button { flex-shrink: 0; }
+.ks-caption { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; font-size: 10px; line-height: 1.6; color: var(--ink-secondary); margin-top: 16px; }
+.ks-caption > span { color: var(--vw-muted); }
+@media (max-width: 740px) {
+  .vw-main-kitchen > .vw-stage { padding: 20px 16px; }
+  .ks-tickets { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ks-stage { height: 360px; }
+  .ks-toolbar { flex-wrap: wrap; }
+  .ks-selected-detail { align-items: flex-start; flex-direction: column; gap: 12px; }
+}
+@media (max-width: 460px) {
+  .ks-tickets { grid-template-columns: 1fr; }
+  .ks-stage { height: 320px; }
+  .ks-camera-hint { font-size: 9px; left: 8px; bottom: 8px; }
+  .ks-camera-hint > span { padding: 0 2px; }
+  .ks-pages { flex-wrap: wrap; }
+}
+@media (max-height: 700px) {
+  .ks-stage { height: 260px; }
+}

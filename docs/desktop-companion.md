@@ -27,6 +27,7 @@ Routine commands use a deterministic command router. No language model runs in t
 | `src/core/agent-sessions.mjs` | Agent sessions: combined view, groups and words, folder matching, settings, open targets |
 | `src/core/sessions/` | Agent sessions: read-only readers for Claude, Codex, Cursor and Hermes, plus the SQLite copy, LevelDB and process-list helpers |
 | `scripts/agent-sessions.mjs`, `src/renderer/SessionsPanel.tsx` | `npm run sessions` terminal view and the Agent sessions panel |
+| `src/core/visual-repository.mjs`, `visual-goals.mjs`, `visual-workspace.mjs`, `src/renderer/VisualWorkspacePanel.tsx` | Visual workspace: bounded local git/import graphs, explicit goal storage, shared selection, kitchen and hook event history |
 | `src/main/transcription.mjs`, `native/transcription-worker.mm` | In-memory PCM conversion and a private persistent Whisper worker |
 | `src/main/rpc.mjs`, `scripts/mcp-server.mjs` | Local socket service and stdio MCP adapter |
 | `src/renderer/` | Workbench, preferences, local recording, wake-gated voice and memory controls |
@@ -247,6 +248,22 @@ Readiness labels are the model's suggestion, not a check: **Looks ready to save*
 - A grouping request is capped at 400 KB. Past 250 changes, the rest are rolled up by top-level folder. A model call can take up to five minutes, and two run at once. If a project fails, its previous grouping stays and the error is listed.
 - Files ignored by `.gitignore` are not shown. Branch counts are fastest with git 2.41 or newer; older git falls back to a slower count.
 - Groupings are a model's reading of file names and short excerpts. They can be wrong or out of date. The file lists and state words come straight from git.
+
+## Visual workspace
+
+Open **Visual workspace** in the title bar, or **⌘⇧V** while focus is outside a text field. The Kitchen opens on **All projects**, combining the sessions already detected by Summon across agent apps, projects, folders and sessions without Git attribution. Working sessions and sessions needing attention come before history. Use the project selector to filter; choose a Git project when opening Goals, Codebase or Git. Kitchen and Live trace do not wait for a repository scan, and their session identities remain the same across views. The browser preview is explicitly labelled sample data; its goal edits stay in memory.
+
+**Git** draws actual commit-parent edges and locally stored branch, remote-tracking and tag references. It performs no fetch, checkout, merge or other repository write. Parents outside the bounded history remain boundary references, not invented roots. Local remote-tracking references can be stale.
+
+**Codebase** groups tracked files into directory components and connects them using observed relative JavaScript/TypeScript import relationships. This is a bounded source scan on the selected checkout, not a generated architectural explanation. Dynamic imports, aliases, other languages and excluded or oversized files can leave gaps; coverage and truncation are shown. Secret, private, generated and vendor paths are excluded, and symlinks are not followed outside the repository. Source bodies are neither persisted nor sent to a model. Changed-file counts refer to the checkout scanned, not all worktrees combined.
+
+**Goals** are explicit local records. Add a goal, give it milestones, choose its status, and optionally link it to a worktree, branch, session or component. Dependencies and parent links must remain acyclic and within the same repository. Commit activity, a finished agent turn or a quiet session never automatically marks a goal complete. Goal data is stored atomically in `visual-goals.json` in Summon's data folder, not in the repository.
+
+**Kitchen** renders a local 3D room using Agenttrail’s MIT-licensed chef rigs, procedural art and animation, bundled with Three.js. Each cook represents one actual Summon session. Working cooks move between preparation and cooking stations; sessions needing input raise a hand, while quiet or stopped sessions remain distinct. Six cooks fit in each room, with paging for larger session lists. Tickets show each session’s project or folder, with an explicit unassigned fallback. Existing session visibility settings still apply. Select a chef or its keyboard-accessible ticket to inspect the session and follow its trace. Drag to orbit, scroll to zoom, or reset the camera. Pause animation keeps session states updating; reduced-motion preferences are honored. If WebGL is unavailable, the session tickets still work. The scene uses Summon’s existing readers without running Agenttrail’s service or another watcher. Movement illustrates observed activity and never asserts task completion or authorship of a change. See `docs/third-party.md` for attribution.
+
+**Live trace** shows metadata reported through Summon's existing hooks, including event names, optional tool names, state and time. Step through the retained sequence to inspect it. History begins when this version receives events; old transcripts are not backfilled. Claude, Codex, Cursor and Hermes do not expose identical events, so an empty trace says no retained hook events, not that no work occurred. No prompt, tool arguments, tool output, conversation or private reasoning is stored.
+
+Graphs are cached briefly and refreshed on demand. Visible-only polling keeps session state and trace data current without repeatedly scanning source while the panel is hidden. Renderer calls use trusted-window IPC, registered repository IDs and existing session keys; no caller can supply an arbitrary filesystem path. These views add no MCP mutation tool and make no model or network request.
 
 ## Where this stands
 
@@ -518,7 +535,8 @@ The default directory is `~/Library/Application Support/Summon/`; **Preferences 
 | `benchmark-key.bin` | Encrypted data API key |
 | `work-in-flight.json` | Work in flight settings, cached workstream groupings and branch summaries; no diff text. An unreadable copy is kept as `work-in-flight.json.corrupt-*` |
 | `agent-sessions.json` | Agent sessions settings: recent hours, the quiet and background switches, what the menu-bar count shows, and moved-folder aliases. No session titles, ids or states. An unreadable copy is kept as `agent-sessions.json.corrupt-*` |
-| `hook-events.json` | Hook events: for each Claude or Codex session that reported through [Summon hooks](#summon-hooks), its id, folder, state word, last event name, tool name, notification kind, timestamps and launch tag. Kept 7 days, at most 500 sessions and 256 KiB; no prompt, transcript path, title or message text. An unreadable copy is kept as `hook-events.json.corrupt-*` |
+| `hook-events.json` | Hook events: per-session latest state plus a bounded sequence of event/tool identifiers, states and receipt times for [Visual workspace](#visual-workspace). Kept 7 days, at most 500 sessions, 100 history events per session, 2,000 history events total and 256 KiB overall; no prompt, transcript path, title, tool input/output or message text. An unreadable copy is kept as `hook-events.json.corrupt-*` |
+| `visual-goals.json` | Explicit goals, milestones, statuses, dependencies and repository-local links. Private atomic saves; unreadable records are left untouched and reported |
 | `claude-hooks.json` | The per-session hook settings **Start Claude here** passes with `claude --settings`; the same content on every launch |
 | `claude-mcp.json` | Summon's MCP server for `claude --mcp-config`, written only when `~/.claude.json` has no `summon` server |
 | `launch/` | One `.command` script per **Start Claude here** or **Start Codex here** click (mode 0700), removed after a day |

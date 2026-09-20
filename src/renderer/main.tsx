@@ -5,6 +5,8 @@ import type { ClaudeHooksStatus, CommandResult, LocalProposal, FileRecord, Setti
 import { KnowledgePanel } from './KnowledgePanel';
 import { WorkInFlightPanel } from './WorkInFlightPanel';
 import { SessionsPanel } from './SessionsPanel';
+import { VisualWorkspacePanel } from './VisualWorkspacePanel';
+import { Network } from 'lucide-react';
 import { Bot } from 'lucide-react';
 import type { AgentSessionsView } from './types';
 import { previewAgentSessions } from './preview';
@@ -68,6 +70,7 @@ function App() {
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showWorkInFlight, setShowWorkInFlight] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
+  const [showVisuals, setShowVisuals] = useState(false);
   const [sessionTotals, setSessionTotals] = useState<AgentSessionsView['totals'] | null>(preview ? previewAgentSessions.totals : null);
   const [routineReceipt, setRoutineReceipt] = useState<CommandResult|null>(null);
   const [proposal, setProposal] = useState<LocalProposal|null>(null);
@@ -106,41 +109,52 @@ function App() {
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); input.current?.focus(); input.current?.select(); }
-      if (event.key === 'Escape' && !showSettings && !showKnowledge && !showWorkInFlight && !showSessions) { setShowVoice(false); setResult(null); setAnswer(''); setQuery(''); }
+      if (event.key === 'Escape' && !showSettings && !showKnowledge && !showWorkInFlight && !showSessions && !showVisuals) { setShowVoice(false); setResult(null); setAnswer(''); setQuery(''); }
+    };
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, [showSettings, showKnowledge, showWorkInFlight, showSessions, showVisuals]);
+
+  useEffect(() => {
+    // ⌘G toggles Work in flight while no other panel is open.
+    const listener = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'g' || showSettings || showKnowledge || showSessions || showVisuals) return;
+      event.preventDefault();
+      setShowWorkInFlight(value => !value);
+    };
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, [showSettings, showKnowledge, showSessions, showVisuals]);
+
+  useEffect(() => {
+    // ⌘E toggles Agent sessions while no other panel is open.
+    const listener = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'e' || showSettings || showKnowledge || showWorkInFlight || showVisuals) return;
+      event.preventDefault();
+      setShowSessions(value => !value);
+    };
+    window.addEventListener('keydown', listener);
+    return () => window.removeEventListener('keydown', listener);
+  }, [showSettings, showKnowledge, showWorkInFlight, showVisuals]);
+
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.key.toLowerCase() !== 'v' || showSettings || showKnowledge || showWorkInFlight || showSessions) return;
+      // Preserve the standard paste-without-formatting shortcut while a text field is being edited.
+      if (event.target instanceof Element && event.target.closest('input,textarea,[contenteditable="true"]')) return;
+      event.preventDefault(); setShowVisuals(value => !value);
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
   }, [showSettings, showKnowledge, showWorkInFlight, showSessions]);
 
   useEffect(() => {
-    // ⌘G toggles Work in flight while no other panel is open.
-    const listener = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'g' || showSettings || showKnowledge || showSessions) return;
-      event.preventDefault();
-      setShowWorkInFlight(value => !value);
-    };
-    window.addEventListener('keydown', listener);
-    return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showSessions]);
-
-  useEffect(() => {
-    // ⌘E toggles Agent sessions while no other panel is open.
-    const listener = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'e' || showSettings || showKnowledge || showWorkInFlight) return;
-      event.preventDefault();
-      setShowSessions(value => !value);
-    };
-    window.addEventListener('keydown', listener);
-    return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showWorkInFlight]);
-
-  useEffect(() => {
     // The menu bar opens a panel here; the main process has already brought the window forward.
     // An older window may not have this subscription, so it is checked before use.
     if (!bridge || typeof bridge.onOpenPanel !== 'function') return;
     return bridge.onOpenPanel((panel: string) => {
-      if (panel === 'agent-sessions') { setShowWorkInFlight(false); setShowSessions(true); }
-      else if (panel === 'work-in-flight') { setShowSessions(false); setShowWorkInFlight(true); }
+      if (panel === 'agent-sessions') { setShowVisuals(false); setShowWorkInFlight(false); setShowSessions(true); }
+      else if (panel === 'work-in-flight') { setShowVisuals(false); setShowSessions(false); setShowWorkInFlight(true); }
     });
   }, []);
 
@@ -217,6 +231,7 @@ function App() {
       <div className="titlebar-actions">
         {preview ? <span className="preview-badge">Preview · sample data</span> : <button className="observation-status" onClick={() => run(async () => setSnapshot(await bridge!.settings({ paused: !snapshot.settings.paused })))} title={snapshot.settings.paused ? 'Resume observation' : 'Pause observation'}><span className={`status-dot ${snapshot.settings.paused ? 'paused' : snapshot.health.watching ? '' : 'paused'}`} />{snapshot.settings.paused ? 'Paused' : snapshot.health.watching ? 'Observing locally' : 'Starting'}{snapshot.settings.paused ? <Play size={13} /> : <Pause size={13} />}</button>}
         <button className="icon-button" title="Preferences" aria-label="Preferences" ref={settingsButton} onClick={() => setShowSettings(true)}><Settings2 size={18} /></button>
+        <button className="button visual-entry" title="Visual workspace (⌘⇧V)" onClick={() => setShowVisuals(true)}><Network size={16} />Visual workspace</button>
       </div>
     </header>
 
@@ -267,6 +282,7 @@ function App() {
     {showKnowledge && bridge && <KnowledgePanel snapshot={snapshot} bridge={bridge} receipt={routineReceipt} onClose={() => setShowKnowledge(false)} onSnapshot={setSnapshot} onResult={response => { setResult(response); setQuery(response.completedCommand||''); setSubmitted(response.completedCommand||''); setAnswer(''); setProposal(null); if(response.fileIds?.length){setSelectedId(response.fileIds[0]);setFilter('all');} }} />}
     {showWorkInFlight && (bridge || preview) && <WorkInFlightPanel bridge={bridge} preview={preview} onClose={() => setShowWorkInFlight(false)} onOpenSessions={() => { setShowWorkInFlight(false); setShowSessions(true); }} />}
     {showSessions && <SessionsPanel bridge={bridge} preview={preview} onClose={() => setShowSessions(false)} onView={view => setSessionTotals(view.totals)} />}
+    {showVisuals && <VisualWorkspacePanel bridge={bridge} preview={preview} onClose={() => setShowVisuals(false)} />}
     {showSettings && <Preferences snapshot={snapshot} busy={busy} onClose={() => { setShowSettings(false); settingsButton.current?.focus(); }} onChange={patch => run(async () => setSnapshot(await bridge!.settings(patch)), true)} onLink={name => run(() => bridge!.openLink(name))} onChooseModel={() => run(async () => setSnapshot(await bridge!.chooseModel()))} onShowWidget={() => run(() => bridge!.showVoiceWidget())} error={error} setVoiceMode={setVoiceMode} voiceActive={handsFreeMode} onEnroll={startEnrollment} onInstallHooks={async () => { const installed = await bridge!.installClaudeHooks(); return installed; }} hookStatus={() => bridge!.claudeHooksStatus()} onRefreshUsage={() => run(async () => { await bridge!.usage({ refresh: true }); setSnapshot(await bridge!.snapshot()); })} onUsageSettings={patch => run(async () => { await bridge!.usageSettings(patch); setSnapshot(await bridge!.snapshot()); })} />}
     {enrollment && <EnrollmentOverlay enrollment={enrollment} onCancel={cancelEnrollment} onDismiss={dismissEnrollment} />}
   </div>;

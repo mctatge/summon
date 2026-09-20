@@ -65,7 +65,7 @@ test('record keeps exactly the entry fields, and nothing from a payload that car
   const text = await fs.readFile(file, 'utf8');
   assert.ok(!text.includes('SECRET'), 'nothing from the payload beyond the known fields reaches the file');
   const parsed = JSON.parse(text);
-  assert.deepEqual(Object.keys(parsed).sort(), ['launches', 'sessions', 'version']);
+  assert.deepEqual(Object.keys(parsed).sort(), ['history', 'launches', 'sessions', 'version']);
   assert.deepEqual(Object.keys(parsed.sessions[`claude:${U(1)}`]).sort(), ENTRY_KEYS);
   // Untrusted fields are checked, not trusted: a relative cwd, an odd kind and a long tool name are cut or dropped.
   const odd = led.record(claude(U(2), 'PostToolUse', { cwd: 'relative/dir', kind: 'has space', toolName: 'x'.repeat(500) }));
@@ -187,4 +187,52 @@ test('an unreadable file is kept as .corrupt-* and the ledger starts empty', asy
   assert.equal(mixed.snapshot().problem, null);
   await assert.rejects(createHookLedger({ dataDir: 'relative' }), /full data folder path/);
   await mixed.close();
+});
+
+test('trace history keeps only reported metadata, returns copies, and reloads old ledgers without inventing history', async t => {
+  const { led, clock, dataDir, file } = await ledger(t);
+  led.record(claude(U(1), 'PreToolUse', { toolName: 'Edit', prompt: SECRET, tool_input: SECRET }));
+  clock.at += MIN;
+  led.record(claude(U(1), 'Notification', { kind: 'auth_success', message: SECRET, toolName: `Bash ${SECRET}` }));
+  const trace = led.trace('claude', U(1));
+  assert.deepEqual(trace.events.map(event => [event.event, event.toolName, event.state, event.confidence]), [['PreToolUse', 'Edit', 'working', 'reported'], ['Notification', null, null, 'reported']]);
+  assert.deepEqual(Object.keys(trace.events[0]).sort(), ['at', 'confidence', 'event', 'id', 'state', 'toolName']);
+  assert.equal(trace.events[0].at, new Date(START).toISOString());
+  assert.equal(trace.truncated, false);
+  trace.events[0].toolName = 'tampered';
+  assert.equal(led.trace('claude', U(1)).events[0].toolName, 'Edit');
+  assert.deepEqual(led.trace('cursor', U(1)), { events: [], truncated: false });
+  await led.close();
+  const saved = JSON.parse(await fs.readFile(file, 'utf8'));
+  assert.ok(!JSON.stringify(saved.history).includes(SECRET));
+  const reopened = await createHookLedger({ dataDir, now: () => clock.at });
+  assert.equal(reopened.trace('claude', U(1)).events.length, 2);
+  await reopened.close();
+  delete saved.history;
+  await fs.writeFile(file, JSON.stringify(saved));
+  const old = await createHookLedger({ dataDir, now: () => clock.at });
+  assert.equal(old.forApp('claude').get(U(1)).state, 'working');
+  assert.deepEqual(old.trace('claude', U(1)), { events: [], truncated: true });
+  old.record(claude(U(1), 'Stop'));
+  assert.equal(old.trace('claude', U(1)).events.length, 1);
+  assert.equal(old.trace('claude', U(1)).truncated, true);
+  await old.close();
+});
+
+test('trace retention bounds individual sessions, total history and time while preserving latest state', async t => {
+  const { led, clock } = await ledger(t, { limits: { historyPerSession: 3, historyTotal: 4 } });
+  for (let i = 0; i < 5; i++) { clock.at += MIN; led.record(claude(U(1), 'PreToolUse', { toolName: 'Edit' })); }
+  assert.equal(led.trace('claude', U(1)).events.length, 3);
+  assert.equal(led.trace('claude', U(1)).truncated, true);
+  for (let i = 0; i < 3; i++) { clock.at += MIN; led.record(claude(U(2), 'Stop')); }
+  assert.equal(led.trace('claude', U(1)).events.length, 1);
+  assert.equal(led.trace('claude', U(2)).events.length, 3);
+  assert.equal(led.forApp('claude').get(U(1)).state, 'working');
+  assert.equal(led.forApp('claude').get(U(1)).events, 5);
+  clock.at += 8 * DAY;
+  led.record(claude(U(2), 'PermissionRequest'));
+  assert.deepEqual(led.trace('claude', U(1)), { events: [], truncated: false });
+  assert.equal(led.trace('claude', U(2)).events.length, 1);
+  assert.equal(led.trace('claude', U(2)).truncated, true);
+  await led.close();
 });

@@ -832,6 +832,7 @@ function hookOverride(hook, own, inferred, ctx) {
 function session(fields) {
   return {
     app: 'claude', surface: fields.surface, id: fields.id, title: fields.title ?? null,
+    ...(fields.hookSessionId ? { hookSessionId: fields.hookSessionId } : {}),
     // 'summon' only when Summon started this session itself (the hook ledger holds its launch tag).
     origin: fields.origin === 'summon' ? 'summon' : null,
     // 'user' only when the person named the session; a missing source counts as the app's own wording.
@@ -1056,7 +1057,7 @@ async function scan(cache, options, stats) {
     if (!(live || isUnread || state.activity === 'needs-you' || (lastActivityAt ?? 0) >= horizon)) continue;
     const lease = byLease.get(entry.id);
     const item = session({
-      surface: 'desktop', id: entry.id, title: full?.title,
+      surface: 'desktop', id: entry.id, hookSessionId: cli, title: full?.title,
       cwd: full?.cwd ?? entry.prefix.cwd ?? reg?.cwd, worktreePath: full?.worktreePath ?? lease?.path, branch: full?.branch ?? lease?.branch,
       startedAt: full?.createdAt, updatedAt: lastActivityAt,
       activity: state.activity, activitySince: since, reason: state.reason,

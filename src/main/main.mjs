@@ -12,6 +12,7 @@ import {createWorkInFlight} from '../core/work-in-flight.mjs';
 import {lstat} from 'node:fs/promises';
 import {GIT_ENV} from '../core/git-scan.mjs';
 import {createAgentSessions,sessionSummaryText} from '../core/agent-sessions.mjs';
+import {createVisualWorkspace} from '../core/visual-workspace.mjs';
 import {clipboard} from 'electron';
 import {createLocalInterpreter} from './local-model.mjs';
 import {createDesktopVoice} from './desktop-voice.mjs';
@@ -39,6 +40,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
   let nativeGeneration=0,nativeSignature='',nativeBuffer='',shutdownComplete=false;
   let workInFlight;
   let agentSessions;
+  let visualWorkspace;
   // Starts claude or codex in Terminal on a click; see launcher.mjs and docs/decisions.md 2026-09-19.
   let launcher;
   // The usage meter: what each CLI says about its own subscription windows; see src/core/usage.mjs and docs/decisions.md 2026-09-19.
@@ -165,11 +167,21 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     const SESSION_APPS={'claude:':['Claude'],'codex:':['ChatGPT','Codex'],'cursor:':['Cursor'],'hermes:':['Hermes']};
     // The window keeps its timers running while hidden (backgroundThrottling is off), so polls from a hidden window get the last check.
     const sessionsShown=()=>Boolean(window&&!window.isDestroyed()&&window.isVisible()&&!window.isMinimized());
+    try{visualWorkspace=await createVisualWorkspace({dataDir,run,git:await executable('git').catch(()=>'/usr/bin/git'),env:scrubbedEnv(GIT_ENV),
+      getWorkInFlight:()=>flight().read({maxAgeMs:20000}),getAgentSessions:()=>sessions().read({maxAgeMs:sessionsShown()?3000:Infinity}),
+      traceSession:key=>sessions().trace(key),getPrivatePaths:repoPath=>workInFlight?.settings?.().privatePaths?.[repoPath]||[]});
+    }catch(error){service.setHealth({errors:[`Visual workspace: ${error.message}`]});}
+    const visuals=()=>{if(!visualWorkspace)throw new Error('Visual workspace is not available right now.');return visualWorkspace;};
+    handle('visual-repository',(repoId,options)=>visuals().read(validId(repoId),options));
+    handle('visual-goal-save',input=>visuals().saveGoal(input));
     handle('agent-sessions',async options=>{const refresh=flightOptions(options,{refresh:'boolean'}).refresh===true;const view=await sessions().read({maxAgeMs:refresh?0:sessionsShown()?3000:Infinity});
       // This read has just re-read the settings file, so a count turned back on by hand starts counting again here.
       // Nothing else would: once it is off there is no timer left to notice the edit.
       if(!statusTimer&&trayCount()!=='off')scheduleStatus(TRAY_FIRST);
       return view;});
+    // Hook metadata belongs to a known session even when it has no repository. Core resolves the identity from
+    // its last session read; this window-only bridge never reads a transcript or initiates a repository scan.
+    handle('agent-session-trace',key=>{if(typeof key!=='string'||!key||key.length>300)throw new Error('Invalid session');return sessions().trace(key);});
     // One open path for the window and the menu bar: the id is checked here and the link is built in core from the
     // last read, so neither caller ever hands over a link of its own.
     async function openAgentSession(key){
@@ -326,6 +338,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     const processes=stopProcesses();
     if(workInFlight)pendingRequests.add(Promise.resolve().then(()=>workInFlight.close()));
     if(agentSessions)pendingRequests.add(Promise.resolve().then(()=>agentSessions.close()));
+    if(visualWorkspace)pendingRequests.add(Promise.resolve().then(()=>visualWorkspace.close()));
     if(usage)pendingRequests.add(Promise.resolve().then(()=>usage.close()));
     // Request promises include engine/transcription finally blocks, which remove
     // temporary audio and prompt directories after their child process stops.

@@ -119,6 +119,7 @@ async function launch(){
     readFile:missing,writeFile:noop,mkdir:noop,stat:missing,access:missing,chmod:noop,lstat:missing,
     createWorkInFlight:async()=>({read:async()=>({}),group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
     createAgentSessions:async()=>({read:async()=>({}),openTarget:async()=>assert.fail('No session is opened.'),settings:()=>({}),updateSettings:async()=>({}),close:async()=>{}}),sessionSummaryText:()=>'',
+    createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopVoice:()=>({publish:noop,updateVoice:noop,start:async()=>{},show:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,

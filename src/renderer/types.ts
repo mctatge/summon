@@ -61,6 +61,8 @@ export type SummonBridge = {
   markStanding(repoId: string | null): Promise<void>;
   onWorkInFlight(callback: (value: WorkInFlight) => void): () => void;
   agentSessions(options?: { refresh?: boolean }): Promise<AgentSessionsView>;
+  // Sanitized hook metadata for a session in the last read, including sessions without a repository.
+  agentSessionTrace(key: string): Promise<VisualTrace>;
   openAgentSession(key: string): Promise<AgentSessionOpenResult | void>;
   agentSessionsSettings(patch: Partial<AgentSessionsSettings>): Promise<AgentSessionsView>;
   // Sent by the menu-bar count when it is clicked: open this panel and show it.
@@ -72,6 +74,8 @@ export type SummonBridge = {
   // Preferences: merge Summon's Claude hooks into ~/.claude/settings.json after a timestamped backup. Click only.
   installClaudeHooks(): Promise<{ installed: boolean; backup: string | null; events: string[] }>;
   claudeHooksStatus(): Promise<ClaudeHooksStatus>;
+  visualRepository(repoId: string, options?: { refresh?: boolean }): Promise<VisualRepository>;
+  saveVisualGoal(input: VisualGoalInput): Promise<VisualGoal[]>;
 };
 // The usage meter: what each CLI reports about its own subscription windows (src/core/usage.mjs). Unknown usage is a
 // status, never 0 %. stale is set by main when a reading is older than 20 minutes; the engine choice ignores stale readings.
@@ -172,6 +176,22 @@ export type WorkInFlightStanding = WorkInFlight & { standing?: WifStanding | nul
 // machine-written title stays underneath it. Read defensively, a window can outlive the app that sends them.
 export type AgentSessionAddress = { headline: string | null; titleIsAuto: boolean };
 export type LocatedAgentSession = AgentSession & Partial<AgentSessionAddress>;
+
+// Visual workspace: local commit ancestry, observed imports, explicit goals and reported hook events.
+export type VisualGoalStatus = 'planned' | 'working' | 'blocked' | 'done';
+export type VisualGoalLinks = { placeId: string | null; branch: string | null; sessionKey: string | null; component: string | null };
+export type VisualGoal = { id: string; repoId: string; title: string; status: VisualGoalStatus; parentId: string | null; dependsOn: string[]; links: VisualGoalLinks; createdAt: string; updatedAt: string };
+export type VisualGoalInput = { repoId: string; id?: string; title?: string; status?: VisualGoalStatus; parentId?: string | null; dependsOn?: string[]; links?: Partial<VisualGoalLinks> };
+export type VisualCommit = { id: string; parents: string[]; subject: string; at: string | null };
+export type VisualRef = { name: string; commitId: string; kind: 'branch' | 'remote' | 'tag' | 'head' };
+export type VisualCodebaseNode = { id: string; label: string; path: string; files: number; changed: number };
+export type VisualCodebaseEdge = { source: string; target: string; count: number };
+export type VisualTraceEvent = { id: string; at: string; event: string; toolName: string | null; state: string | null; confidence: 'reported' };
+export type VisualTrace = { sessionKey: string; events: VisualTraceEvent[]; truncated: boolean };
+export type VisualRepository = { version: 1; repoId: string; scannedAt: string;
+  git: { commits: VisualCommit[]; refs: VisualRef[]; truncated: boolean; error: string | null };
+  codebase: { nodes: VisualCodebaseNode[]; edges: VisualCodebaseEdge[]; truncated: boolean; error: string | null; note?: string | null; mode: 'imports' };
+  goals: VisualGoal[]; traces: VisualTrace[]; warnings: string[] };
 
 // What the core actually puts in AgentSessionAddress above.
 // headline is never empty: '<Project> · <piece of work>' when the session's own edited files fall in one of the

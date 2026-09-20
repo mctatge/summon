@@ -195,6 +195,8 @@ function sanitizeSession(raw, app) {
   const reason = clean(raw.reason, 120) || null;
   return {
     app, surface: raw.surface, id: raw.id, title: clean(raw.title, LIMITS.titleChars) || null,
+    // Only the Claude reader can join a desktop local_ id to its CLI hook id. Never derive it from a display key.
+    hookSessionId: app === 'claude' && typeof raw.hookSessionId === 'string' && UUID.test(raw.hookSessionId) ? raw.hookSessionId.toLowerCase() : UUID.test(raw.id) ? raw.id.toLowerCase() : null,
     cwd: pathOrNull(raw.cwd), worktreePath: pathOrNull(raw.worktreePath), branch: clean(raw.branch, 200) || null,
     startedAt: epoch(raw.startedAt), updatedAt: epoch(raw.updatedAt),
     activity: ACTIVITIES.includes(raw.activity) ? raw.activity : 'unknown', activitySince: epoch(raw.activitySince), reason,
@@ -512,6 +514,7 @@ export async function createAgentSessions({
   let requests = 0;
   let generation = 0;
   let lastTargets = new Map();
+  let lastTraceTargets = new Map();
   let closing = false;
   let infra = null;
   let ownSnapshots = null;
@@ -1006,6 +1009,7 @@ export async function createAgentSessions({
       hiddenWorking: hidden.filter(record => !record.folder.drop).length,
       totals: { needsYou: size('needs-you'), newReplies: size('new'), working: size('working'), open: size('open') },
       targets: new Map(kept.map(record => [record.key, record.target])),
+      traceTargets: new Map(kept.map(record => [record.key, { app: record.session.app, id: record.session.hookSessionId }])),
     };
   }
 
@@ -1142,6 +1146,7 @@ export async function createAgentSessions({
       snapshot = fresh ? cache : await collect();
     }
     lastTargets = snapshot.targets;
+    lastTraceTargets = snapshot.traceTargets;
     return viewFor(snapshot, forAgent, { app, includeRecent });
   }
 
@@ -1162,6 +1167,14 @@ export async function createAgentSessions({
     if (target.kind === 'url') return target.appNames ? { kind: 'url', url: target.url, appName: target.appName, appNames: [...target.appNames] } : { kind: 'url', url: target.url, appName: target.appName };
     if (target.kind === 'copy') return { kind: 'copy', text: target.text };
     return { kind: 'folder', path: target.path };
+  }
+
+  function trace(key) {
+    if (closing) throw new Error('Summon is closing.');
+    if (typeof key !== 'string' || !key || key.length > 300 || !lastTraceTargets.has(key)) throw new Error(GONE);
+    if (!hooks) throw new Error(hooksProblem || 'Hook events are not available.');
+    const target = lastTraceTargets.get(key);
+    return { sessionKey: key, ...hooks.trace(target.app, target.id) };
   }
 
   async function updateSettings(patch) {
@@ -1214,5 +1227,5 @@ export async function createAgentSessions({
   }
 
   await enqueue(readState);
-  return { read, openTarget, placeCounts, settings: () => clone(state.settings), updateSettings, noteHook, noteLaunch, close };
+  return { read, openTarget, trace, placeCounts, settings: () => clone(state.settings), updateSettings, noteHook, noteLaunch, close };
 }

@@ -227,7 +227,7 @@ test('the agent_sessions tool explains an older or closed Summon', async t => {
 });
 
 // Runs the real main.mjs lifecycle with injected adapters (same approach as lifecycle.test.mjs).
-async function startMain({ createAgentSessions, createWorkInFlight, handlers: protocolHandlers = {}, launcher = { launch: () => assert.fail('Nothing launches here.'), installClaudeHooks: () => assert.fail('Nothing installs hooks here.'), hookStatus: async () => ({ claude: { installed: false, current: false } }) } }) {
+async function startMain({ createAgentSessions, createWorkInFlight, createVisualWorkspace = async () => ({ read: async () => assert.fail('No visual read expected.'), saveGoal: async () => assert.fail('No goal save expected.'), close: async () => {} }), handlers: protocolHandlers = {}, launcher = { launch: () => assert.fail('Nothing launches here.'), installClaudeHooks: () => assert.fail('Nothing installs hooks here.'), hookStatus: async () => ({ claude: { installed: false, current: false } }) } }) {
   const handlers = new Map(); const fnMonitors = []; let fnStarts = 0, fnStops = 0; const external = []; const copied = []; const shown = []; const opened = []; const health = [];
   const ctx = { handlers, external, copied, shown, opened, health, finalQuits: 0, rpcOptions: null, launcherOptions: null, window: null, entries: new Map(), protocolChecks: [] };
   let started;
@@ -257,7 +257,7 @@ async function startMain({ createAgentSessions, createWorkInFlight, handlers: pr
   vm.runInNewContext(source, {
     app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop },
     createWorkInFlight, runGrouping: async () => ({ raw: {}, model: null }), GIT_ENV: {},
-    createAgentSessions, clipboard: { writeText: text => { copied.push(text); } },
+    createAgentSessions, createVisualWorkspace, clipboard: { writeText: text => { copied.push(text); } },
     createDesktopVoice: () => ({ publish: noop, updateVoice: noop, start: async () => {}, show: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -287,6 +287,141 @@ const flightStub = () => ({
   read: async () => ({}), group: () => ({}), updateSettings: async () => {}, placePath: () => '/private/tmp/synthetic-home/Demo', close: async () => {},
   places: () => [{ id: 'place-demo', repoId: 'demo', repoName: 'Demo', path: '/private/tmp/synthetic-home/Demo', kind: 'main', label: 'Main folder', missing: false }],
   settings: () => ({ privatePaths: { '/private/tmp/synthetic-home/Demo': ['notes/people/'] } }),
+});
+
+test('preload exposes the session trace as a single read-only IPC call', async () => {
+  const calls = [], key = 'claude:desktop:local_trace';
+  const trace = { sessionKey: key, events: [], truncated: false };
+  let bridge;
+  const sourceURL = new URL('../src/main/preload.cjs', import.meta.url);
+  vm.runInNewContext(await readFile(sourceURL, 'utf8'), {
+    require: name => {
+      assert.equal(name, 'electron');
+      return {
+        contextBridge: { exposeInMainWorld: (name, value) => { assert.equal(name, 'summon'); bridge = value; } },
+        ipcRenderer: { invoke: async (...args) => { calls.push(args); return trace; } },
+      };
+    },
+  }, { filename: fileURLToPath(sourceURL) });
+  assert.equal(await bridge.agentSessionTrace(key), trace);
+  assert.deepEqual(calls, [['summon:agent-session-trace', key]]);
+});
+
+test('main reads traces for known sessions without repositories only from the trusted window', async () => {
+  const item = session('claude', 'Unassigned session');
+  assert.equal(item.repoId, null);
+  const view = { groups: [{ id: 'working', sessions: [item] }] };
+  const trace = { sessionKey: item.key, events: [{ id: 'event-one', at: '2026-09-17T15:00:00.000Z', event: 'PreToolUse', toolName: 'Edit', state: 'working', confidence: 'reported' }], truncated: false };
+  const calls = [];
+  let hasRead = false;
+  const ctx = await startMain({
+    createWorkInFlight: async () => { throw new Error('Synthetic repository service unavailable'); },
+    createAgentSessions: async () => ({
+      read: async () => { hasRead = true; return view; },
+      trace: key => { calls.push(key); if (!hasRead || key !== item.key) throw new Error('That session is no longer in the list.'); return trace; },
+      settings: () => ({ trayCount: 'off' }), close: async () => {},
+    }),
+    createVisualWorkspace: async () => { throw new Error('Synthetic visual service unavailable'); },
+  });
+  for (const invalid of [undefined, null, 42, {}, [], '', 'x'.repeat(301)]) await assert.rejects(ctx.call('agent-session-trace', invalid), /Invalid session/);
+  const handler = ctx.handlers.get('summon:agent-session-trace');
+  await assert.rejects(handler({ sender: {}, senderFrame: ctx.window.webContents.mainFrame }, item.key), /Untrusted/);
+  await assert.rejects(handler({ sender: ctx.window.webContents, senderFrame: {} }, item.key), /Untrusted/);
+  assert.deepEqual(calls, [], 'invalid and untrusted requests cannot reach the session ledger');
+  await assert.rejects(ctx.call('agent-session-trace', item.key), /no longer in the list/);
+  assert.equal(await ctx.call('agent-sessions'), view);
+  assert.equal(await ctx.call('agent-session-trace', item.key), trace);
+  await assert.rejects(ctx.call('agent-session-trace', 'claude:desktop:local_missing'), /no longer in the list/);
+  assert.deepEqual(calls, [item.key, item.key, 'claude:desktop:local_missing']);
+  assert.deepEqual(ctx.external, []);
+  assert.deepEqual(ctx.copied, []);
+  assert.deepEqual(ctx.shown, []);
+  ctx.app.quit();
+  await tick();
+  assert.equal(ctx.finalQuits, 1);
+  await assert.rejects(ctx.call('agent-session-trace', item.key), /shutting down/);
+});
+
+test('main confines visual reads and goal saves to trusted IPC and drains them before quitting', async () => {
+  const calls = [], sourceCalls = [];
+  let options, releaseSave, releaseClose, closes = 0;
+  const saveGate = new Promise(resolve => { releaseSave = resolve; });
+  const closeGate = new Promise(resolve => { releaseClose = resolve; });
+  const graph = { version: 1, repoId: 'demo', marker: 'visual graph' };
+  const saved = [{ id: 'goal-one', repoId: 'demo', title: 'Ship the visual workspace' }];
+  const visual = {
+    read: async (repoId, request) => { calls.push(['read', repoId, request]); return graph; },
+    saveGoal: async input => { calls.push(['save', input]); if (input.title === 'Wait for save') await saveGate; return saved; },
+    close: async () => { closes++; await closeGate; },
+  };
+  const work = { repos: [{ id: 'demo' }] };
+  const agents = { groups: [] };
+  const trace = { sessionKey: 'codex:desktop:known', events: [], truncated: false };
+  const flight = { ...flightStub(), read: async value => { sourceCalls.push(['flight', value]); return work; } };
+  const sessions = {
+    read: async value => { sourceCalls.push(['sessions', value]); return agents; },
+    trace: key => { sourceCalls.push(['trace', key]); return trace; },
+    settings: () => ({}), close: async () => {},
+  };
+  const ctx = await startMain({ createWorkInFlight: async () => flight, createAgentSessions: async () => sessions, createVisualWorkspace: async value => { options = value; return visual; } });
+  assert.deepEqual(ctx.health.filter(value => value.errors), []);
+  assert.equal(options.dataDir, '/private/tmp/synthetic-summon-data');
+  assert.equal(options.run, ctx.missing);
+  assert.equal(options.git, '/usr/bin/git');
+  assert.deepEqual(sourceCalls, [], 'initializing the coordinator does not scan repositories or sessions');
+  assert.equal(await options.getWorkInFlight(), work);
+  assert.deepEqual(plain(sourceCalls.pop()), ['flight', { maxAgeMs: 20000 }]);
+  assert.equal(await options.getAgentSessions(), agents);
+  assert.deepEqual(plain(sourceCalls.pop()), ['sessions', { maxAgeMs: 3000 }]);
+  ctx.window.visible = false;
+  await options.getAgentSessions();
+  assert.equal(sourceCalls.pop()[1].maxAgeMs, Infinity, 'hidden-window visual reads reuse the session cache');
+  ctx.window.visible = true;
+  assert.equal(options.traceSession(trace.sessionKey), trace);
+  assert.deepEqual(sourceCalls.pop(), ['trace', trace.sessionKey]);
+  assert.deepEqual(plain(options.getPrivatePaths('/private/tmp/synthetic-home/Demo')), ['notes/people/']);
+  assert.deepEqual(plain(options.getPrivatePaths('/private/tmp/synthetic-home/Other')), []);
+  assert.equal(await ctx.call('visual-repository', 'demo', { refresh: true }), graph);
+  assert.deepEqual(plain(calls.pop()), ['read', 'demo', { refresh: true }]);
+  const input = { repoId: 'demo', title: 'Ship the visual workspace', links: { sessionKey: trace.sessionKey } };
+  assert.equal(await ctx.call('visual-goal-save', input), saved);
+  assert.deepEqual(calls.pop(), ['save', input]);
+  for (const invalid of [null, 42, {}, 'x'.repeat(201)]) await assert.rejects(ctx.call('visual-repository', invalid), /Invalid item/);
+  for (const channel of ['visual-repository', 'visual-goal-save']) {
+    const handler = ctx.handlers.get(`summon:${channel}`);
+    await assert.rejects(handler({ sender: {}, senderFrame: ctx.window.webContents.mainFrame }, input), /Untrusted/);
+    await assert.rejects(handler({ sender: ctx.window.webContents, senderFrame: {} }, input), /Untrusted/);
+  }
+  assert.deepEqual(calls, [], 'invalid or untrusted IPC never reaches the visual service');
+  assert.equal(Object.values(ctx.rpcOptions).includes(visual), false, 'the socket receives no visual service or goal writer');
+  assert.equal(Object.keys(ctx.rpcOptions).some(key => /visual|goal/i.test(key)), false);
+
+  const pending = ctx.call('visual-goal-save', { repoId: 'demo', title: 'Wait for save' });
+  await tick();
+  ctx.app.quit();
+  await tick();
+  assert.equal(closes, 1);
+  assert.equal(ctx.finalQuits, 0, 'accepted goal save and coordinator close hold shutdown open');
+  for (const channel of ['visual-repository', 'visual-goal-save']) await assert.rejects(ctx.call(channel, input), /shutting down/);
+  releaseSave();
+  assert.equal(await pending, saved);
+  await tick();
+  assert.equal(ctx.finalQuits, 0, 'shutdown still awaits the coordinator close');
+  releaseClose();
+  await tick();
+  assert.equal(ctx.finalQuits, 1);
+});
+
+test('a visual workspace startup failure leaves other services available and rejects visual IPC visibly', async () => {
+  const view = { groups: [] };
+  const ctx = await startMain({ createWorkInFlight: async () => flightStub(), createAgentSessions: async () => ({ read: async () => view, settings: () => ({}), close: async () => {} }), createVisualWorkspace: async () => { throw new Error('Synthetic goals file failure'); } });
+  assert.deepEqual(plain(ctx.health.filter(value => value.errors)), [{ errors: ['Visual workspace: Synthetic goals file failure'] }]);
+  assert.equal(await ctx.call('agent-sessions'), view);
+  await assert.rejects(ctx.call('visual-repository', 'demo'), /Visual workspace is not available/);
+  await assert.rejects(ctx.call('visual-goal-save', { repoId: 'demo', title: 'Save' }), /Visual workspace is not available/);
+  ctx.app.quit();
+  await tick();
+  assert.equal(ctx.finalQuits, 1);
 });
 
 test('main wires Agent sessions into IPC, the socket service and shutdown, and opens only checked targets', async () => {
@@ -404,6 +539,7 @@ test('Summon still starts when Agent sessions or Work in flight cannot load', as
   assert.deepEqual(plain(ctx.health.filter(value => value.errors)), [{ errors: ['Agent sessions: Synthetic sessions failure'] }]);
   assert.equal(ctx.rpcOptions.agentSessions, undefined);
   await assert.rejects(ctx.call('agent-sessions'), /Agent sessions are not available right now/);
+  await assert.rejects(ctx.call('agent-session-trace', 'claude:desktop:local_abc'), /not available/);
   await assert.rejects(ctx.call('agent-session-open', 'claude:desktop:local_abc'), /not available/);
   await assert.rejects(ctx.call('agent-sessions-settings', {}), /not available/);
   ctx.app.quit();

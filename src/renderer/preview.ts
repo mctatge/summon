@@ -2,11 +2,64 @@ import type { Snapshot } from './types';
 import type { WifFile, WifPlace, WorkInFlightStanding } from './types';
 import type { AgentSession, AgentSessionAddress, AgentSessionWork, AgentSessionsView, LocatedAgentSession } from './types';
 import type { WifStanding, WifStandingEntry, WifStandingNote, WifStandingRepo } from './types';
+import type { VisualRepository, VisualGoal } from './types';
 
 // These records only render in a regular browser without the native bridge.
 // Preview never opens files, changes settings, or captures activity.
 const now = Date.now();
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+
+// Synthetic data for the explicitly labelled browser preview only. Native reads never use these records.
+export function previewVisualRepository(repoId: string): VisualRepository {
+  const repo = previewWorkInFlight.repos.find(item => item.id === repoId);
+  const sessions = previewAgentSessions.groups.flatMap(group => group.sessions).filter(session => session.repoId === repoId);
+  const firstPlace = repo?.places[0];
+  const branch = repo?.branches.find(item => !item.merged);
+  const oid = (shortId: string) => shortId.padEnd(40, '0');
+  const head = oid(firstPlace?.head || '4f2a91c0');
+  const branchTip = oid(branch?.tip || '51b0e7c2');
+  const rootId = `preview-goal-${repoId}`;
+  const goal = (id: string, title: string, status: VisualGoal['status'], parentId: string | null, index: number): VisualGoal => ({
+    id, repoId, title, status, parentId, dependsOn: [],
+    links: { placeId: firstPlace?.id ?? null, branch: firstPlace?.branch ?? null, sessionKey: sessions[index]?.key ?? null, component: index === 1 ? 'src/shared' : 'src/templates' },
+    createdAt: ago(180), updatedAt: ago(3),
+  });
+  return {
+    version: 1, repoId, scannedAt: ago(1),
+    git: { commits: repo?.error ? [] : [
+      { id: head, parents: [oid('b7c042d1')], subject: 'Add the preview drawer', at: ago(12) },
+      { id: branchTip, parents: [oid('b7c042d1')], subject: branch?.subject || 'Refine the working view', at: ago(30) },
+      { id: oid('b7c042d1'), parents: [oid('c8de39a2'), oid('e16a540b')], subject: 'Merge the shared controls', at: ago(120) },
+      { id: oid('e16a540b'), parents: [oid('c8de39a2')], subject: 'Make shared controls accessible', at: ago(150) },
+      { id: oid('c8de39a2'), parents: [], subject: 'Start the workspace', at: ago(240) },
+    ], refs: repo?.error ? [] : [
+      { name: firstPlace?.branch || 'main', commitId: head, kind: 'branch' },
+      { name: branch?.name || 'codex/working-view', commitId: branchTip, kind: 'branch' },
+      { name: 'origin/main', commitId: oid('b7c042d1'), kind: 'remote' },
+    ], truncated: false, error: repo?.error ?? null },
+    codebase: { mode: 'imports', nodes: repo?.error ? [] : [
+      { id: 'src/templates', label: 'templates', path: 'src/templates', files: 18, changed: 5 },
+      { id: 'src/pricing', label: 'pricing', path: 'src/pricing', files: 9, changed: 2 },
+      { id: 'src/shared', label: 'shared', path: 'src/shared', files: 12, changed: 1 },
+      { id: 'tests', label: 'tests', path: 'tests', files: 16, changed: 2 },
+    ], edges: repo?.error ? [] : [{ source: 'src/templates', target: 'src/shared', count: 6 }, { source: 'src/pricing', target: 'src/shared', count: 3 }, { source: 'tests', target: 'src/templates', count: 4 }],
+      truncated: false, error: repo?.error ?? null, note: 'Sample local import relationships.' },
+    goals: repo?.error ? [] : [
+      { ...goal(rootId, 'Make the workspace easier to follow', 'working', null, 0), links: { placeId: null, branch: null, sessionKey: null, component: null } },
+      goal(`${rootId}-controls`, 'Finish the shared controls', 'done', rootId, 1),
+      goal(`${rootId}-preview`, 'Make the preview useful', 'working', rootId, 0),
+      { ...goal(`${rootId}-review`, 'Review the complete flow', 'blocked', rootId, 2), dependsOn: [`${rootId}-preview`] },
+    ],
+    traces: sessions.map((session, index) => ({ sessionKey: session.key, truncated: false, events: session.app === 'claude' ? [
+      { id: `preview-${index}-1`, at: ago(8), event: 'UserPromptSubmit', toolName: null, state: 'working', confidence: 'reported' },
+      { id: `preview-${index}-2`, at: ago(7), event: 'PreToolUse', toolName: 'Read', state: 'working', confidence: 'reported' },
+      { id: `preview-${index}-3`, at: ago(6), event: 'PostToolUse', toolName: 'Read', state: 'working', confidence: 'reported' },
+      { id: `preview-${index}-4`, at: ago(4), event: 'PreToolUse', toolName: 'Edit', state: 'working', confidence: 'reported' },
+      { id: `preview-${index}-5`, at: ago(2), event: session.activity === 'needs-you' ? 'PermissionRequest' : 'PostToolUse', toolName: 'Edit', state: session.activity === 'needs-you' ? 'needs-you' : 'working', confidence: 'reported' },
+    ] : session.app === 'codex' ? [{ id: `preview-${index}-1`, at: ago(3), event: 'UserPromptSubmit', toolName: null, state: 'working', confidence: 'reported' }] : [] })),
+    warnings: [],
+  };
+}
 export const previewSnapshot: Snapshot = {
   version: 1,
   projects: [

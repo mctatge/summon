@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 
 // Hook events: what a Claude or Codex session reports about itself through scripts/summon-hook.mjs, kept per session
-// as one small entry: ids, folder, a state word, the last event name, tool name and notification kind, and times.
+// as a latest-state entry plus a bounded metadata-only event history for visual traces.
 // Nothing here has a field for prompt text, transcript paths, tool input or message text, so none can be stored.
 // Readers (sessions/claude.mjs, sessions/codex.mjs) take a hook state over the app's own record when that record is
 // inferred or older; the ledger itself decides nothing about rows.
@@ -14,6 +14,7 @@ const STATES = Object.freeze(['open', 'working', 'needs-you', 'failed', 'ended']
 const LIMITS = Object.freeze({
   sessionMs: 7 * 864e5, sessions: 500, launches: 100, launchUnboundMs: 24 * 3600e3, launchBoundMs: 7 * 864e5,
   fileBytes: 262144, debounceMs: 500, eventChars: 40, toolChars: 120, kindChars: 40, pathChars: 1024, idChars: 200,
+  historyPerSession: 100, historyTotal: 2000,
 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAG = /^[0-9a-f-]{8,64}$/;
@@ -32,6 +33,17 @@ const cleanText = (value, max) => typeof value === 'string' ? value.replace(/[\u
 const ms = value => Number.isFinite(value) && value > 0 && value < 1e14 ? Math.round(value) : null;
 const uuidOf = value => typeof value === 'string' && UUID.test(value.toLowerCase()) ? value.toLowerCase() : null;
 const tagOf = value => typeof value === 'string' && TAG.test(value) ? value : null;
+// Tool/event identifiers only: free-form messages or tool arguments never become trace labels.
+const traceName = (value, max) => {
+  const name = cleanText(value, max);
+  return /^[A-Za-z][A-Za-z0-9_.:-]*$/.test(name) ? name : null;
+};
+function pickTraceEvent(raw) {
+  if (!isObject(raw)) return null;
+  const id = uuidOf(raw.id), at = ms(raw.at), event = traceName(raw.event, LIMITS.eventChars);
+  if (!id || !at || !event) return null;
+  return { id, at, event, toolName: traceName(raw.toolName, LIMITS.toolChars), state: STATES.includes(raw.state) ? raw.state : null };
+}
 
 /** The state a hook event stands for, or null when the event says nothing about the session's state. */
 export function hookActivity(app, event, kind = null) {
@@ -87,7 +99,7 @@ function pickLaunch(raw) {
 }
 
 /**
- * The ledger behind "sessions report through hooks". record() stores one event per session (the newest wins),
+ * The ledger behind "sessions report through hooks". record() updates the latest state and a bounded event history,
  * noteLaunch() remembers a session Summon started, forApp() hands a reader the per-session states, and the file under
  * dataDir keeps them across restarts with bounded retention.
  */
@@ -98,6 +110,7 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
   const filename = path.join(dataDir, 'hook-events.json');
   let sessions = new Map();
   let launches = new Map();
+  const history = new Map();
   let dirty = false;
   let timer = null;
   let writing = Promise.resolve();
@@ -121,14 +134,23 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
     }
     for (const value of Object.values(parsed.sessions)) { const entry = pickEntry(value); if (entry) sessions.set(`${entry.app}:${entry.sessionId}`, entry); }
     for (const [tag, value] of Object.entries(parsed.launches)) { const launch = tagOf(tag) ? pickLaunch(value) : null; if (launch) launches.set(tag, launch); }
+    for (const [key, entry] of sessions) {
+      const raw = isObject(parsed.history) ? parsed.history[key] : null;
+      const seen = new Set();
+      const events = (Array.isArray(raw?.events) ? raw.events : []).map(pickTraceEvent).filter(event => {
+        if (!event || seen.has(event.id)) return false;
+        seen.add(event.id); return true;
+      }).sort((a, b) => a.at - b.at);
+      history.set(key, { events, truncated: raw?.truncated === true || entry.events > events.length });
+    }
     prune();
   }
 
   function serialize() {
-    return `${JSON.stringify({ version: VERSION, sessions: Object.fromEntries(sessions), launches: Object.fromEntries(launches) }, null, 1)}\n`;
+    return `${JSON.stringify({ version: VERSION, sessions: Object.fromEntries(sessions), launches: Object.fromEntries(launches), history: Object.fromEntries(history) }, null, 1)}\n`;
   }
 
-  /** Retention: 7 days and 500 sessions, 100 launches (unbound ones for a day), and a 256 KiB file. */
+  /** State and trace retention share the 7-day / 256 KiB bounds. Drop trace history before latest states. */
   function prune() {
     const at = now();
     for (const [key, entry] of sessions) if (at - entry.eventAt > limit.sessionMs) sessions.delete(key);
@@ -136,7 +158,28 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
     if (sessions.size > limit.sessions) for (const [key] of oldestFirst().slice(0, sessions.size - limit.sessions)) sessions.delete(key);
     for (const [tag, launch] of launches) if (at - launch.at > (launch.sessionId ? limit.launchBoundMs : limit.launchUnboundMs)) launches.delete(tag);
     if (launches.size > limit.launches) for (const [tag] of [...launches.entries()].sort((a, b) => a[1].at - b[1].at).slice(0, launches.size - limit.launches)) launches.delete(tag);
-    while (sessions.size && Buffer.byteLength(serialize()) > limit.fileBytes) sessions.delete(oldestFirst()[0][0]);
+    for (const [key, trace] of history) {
+      if (!sessions.has(key)) { history.delete(key); continue; }
+      const before = trace.events.length;
+      trace.events = trace.events.filter(event => at - event.at <= limit.sessionMs).slice(-limit.historyPerSession);
+      if (trace.events.length < before) trace.truncated = true;
+    }
+    const ordered = () => [...history.values()].flatMap(trace => trace.events.map(event => ({ trace, event }))).sort((a, b) => a.event.at - b.event.at);
+    function dropOldest(count) {
+      for (const { trace, event } of ordered().slice(0, count)) {
+        trace.events = trace.events.filter(value => value !== event); trace.truncated = true;
+      }
+    }
+    const count = [...history.values()].reduce((sum, trace) => sum + trace.events.length, 0);
+    if (count > limit.historyTotal) dropOldest(count - limit.historyTotal);
+    let bytes = Buffer.byteLength(serialize());
+    while (bytes > limit.fileBytes && [...history.values()].some(trace => trace.events.length)) {
+      dropOldest(Math.max(1, Math.ceil((bytes - limit.fileBytes) / 180)));
+      bytes = Buffer.byteLength(serialize());
+    }
+    while (sessions.size && Buffer.byteLength(serialize()) > limit.fileBytes) {
+      const key = oldestFirst()[0][0]; sessions.delete(key); history.delete(key);
+    }
   }
 
   async function writeNow() {
@@ -197,6 +240,10 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
     const mapped = hookActivity(event.app, name, entry.kind);
     if (mapped) { entry.state = mapped.state; entry.reason = mapped.reason; entry.stateAt = at; }
     sessions.set(key, entry);
+    const trace = history.get(key) ?? { events: [], truncated: entry.events > 1 };
+    const reported = pickTraceEvent({ id: randomUUID(), at, event: name, toolName: entry.toolName, state: mapped?.state ?? null });
+    if (reported) trace.events.push(reported); else trace.truncated = true;
+    history.set(key, trace);
     prune();
     schedule();
     return clone(entry);
@@ -230,6 +277,12 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
   }
   const launch = tag => (tagOf(tag) && launches.has(tag) ? clone(launches.get(tag)) : null);
   const snapshot = () => ({ version: VERSION, sessions: clone(Object.fromEntries(sessions)), launches: clone(Object.fromEntries(launches)), problem, file: filename });
+  function trace(app, sessionId) {
+    prune();
+    const id = uuidOf(sessionId), key = `${app}:${id}`;
+    const kept = id && APPS.includes(app) ? history.get(key) : null;
+    return { events: (kept?.events ?? []).map(event => ({ ...event, at: new Date(event.at).toISOString(), confidence: 'reported' })), truncated: kept?.truncated === true };
+  }
 
   async function close() {
     if (closed) return;
@@ -238,5 +291,5 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
   }
 
   await load();
-  return { record, noteLaunch, forApp, launch, flush, close, snapshot };
+  return { record, noteLaunch, forApp, launch, trace, flush, close, snapshot };
 }

@@ -269,7 +269,7 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
 
   // A: live, busy, unread, pinned, worktree from git-worktrees.json, two live helpers.
   assert.deepEqual(s.get(D.A), {
-    app: 'claude', surface: 'desktop', id: D.A, title: 'Fix share links', origin: null, titleSource: 'auto', cwd: f.worktree, worktreePath: f.worktree, branch: 'claude/upbeat-raman',
+    app: 'claude', surface: 'desktop', id: D.A, title: 'Fix share links', hookSessionId: U(1), origin: null, titleSource: 'auto', cwd: f.worktree, worktreePath: f.worktree, branch: 'claude/upbeat-raman',
     startedAt: NOW - HOUR, updatedAt: NOW - 2 * MIN, activity: 'working', activitySince: NOW - 12 * MIN, reason: null,
     unread: true, archived: false, pinned: true, live: true, confidence: 'reported', helpers: 2, model: 'claude-opus-5',
     work: { added: 340, removed: 20, files: 12, area: null, scope: 'session', workstream: null, workstreamState: null },
@@ -927,6 +927,7 @@ test('Claude reader: hook states win over older or inferred records, an ended re
   ]);
   const read = async states => byId(await createClaudeReader({ homeDir: f.home, processes, isAlive, readLocalStorageKeys: readKeys }).read({ hookStates: states }));
   const s = await read(hookStates);
+  assert.equal(s.get(LOCAL(407)).hookSessionId, U(407), 'the internal desktop trace identity comes from the verified CLI join');
   const state = id => [s.get(id).activity, s.get(id).reason, s.get(id).confidence, s.get(id).live, s.get(id).origin];
   assert.deepEqual(state(U(401)), ['open', null, 'reported', true, null]);
   assert.equal(s.get(U(401)).activitySince, NOW - MIN, 'the row is timed from the report');

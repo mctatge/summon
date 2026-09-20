@@ -25,6 +25,7 @@ live in `CLAUDE.local.md` when present; it is not tracked.
 | `src/main/launcher.mjs`, `src/core/hook-events.mjs`, `scripts/summon-hook.mjs` | Starting a `claude` or `codex` session in Terminal from a click, and hook ingest: the per-launch `.command`, the per-session flags, the reporter, the `hook` socket method's ledger and how readers rank a reported state (`docs/decisions.md` 2026-09-19) | Changing launch flags, reporter fields or hook-state precedence |
 | `src/main/`, `scripts/` | Electron, IPC, commands, CLI answers, transcription, MCP and packaging | Changing desktop actions, integrations, or builds |
 | `src/renderer/`, `native/README.md` | Workbench/voice UI and Swift context helper | Changing UI, capture, or native permissions |
+| `src/core/visual-*.mjs`, `src/renderer/VisualWorkspacePanel.tsx` | Visual workspace: local commit/import graphs, explicit goals, session kitchen and hook trace (`docs/desktop-companion.md`) | Changing diagrams, goal links or visual event history |
 | `tests/`, `native/check.mjs` | Core/command tests and synthetic native checks | Verifying implementation changes |
 | `docs/migration-plan.md` | Phased plan for moving the executor, spoken conversation and learning loop from Hermes into Summon, with the defaults chosen | Working on the executor, conversation mode, or review/learning |
 | `docs/decisions.md` | Dated scope, auth, routing, and permission decisions | Changing an architectural boundary |

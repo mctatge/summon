@@ -1023,3 +1023,20 @@ unchanged and now has no exception: the main window's main frame, audio only
 for assistant mode and goes with it). The read-only Hermes session reader
 stays, as for any other agent. Observation, MCP scope and provider
 authentication do not change.
+
+## 2026-09-20 — Connected visual workspace, explicit goals and bounded hook history
+
+The owner requested goal diagrams, both codebase and commit-history diagrams, a kitchen-style agent view and a live event graph. Implement these as five presentations within Summon's existing workbench. The common identities are repository, worktree and session; relationship labels distinguish explicit goal links, observed import edges and reported/inferred session state.
+
+The codebase view adds a bounded, local read of tracked JavaScript/TypeScript source to identify relative imports. Secret/private/generated/vendor paths are excluded and no source bodies leave the process or enter durable state. The git view reads real commit parents and locally stored references with the existing read-only git environment. No network, hosted diagram generator, provider credential or autonomous model call is introduced.
+
+Goals are user-authored records with explicit statuses, parent milestones, dependencies and optional local links. Their private data file is `visual-goals.json`; no progress percentage or completion is inferred from git or agent activity. Cycles and cross-repository links are rejected before saving.
+
+The hook ledger now retains a bounded sequence of the same metadata it already accepted (event name, optional tool name, state and receipt time), alongside the existing latest-state entry. Retention is at most seven days, 100 events per session and 2,000 events in total, also subject to the ledger byte cap. Prompt text, tool inputs/outputs and transcript contents remain excluded. Old latest-state files load without fabricated history. The timeline reports observed actions, not internal reasoning or reconstructed intent.
+
+The owner clarified that the kitchen should have Agenttrail’s animated 3D appearance. Bundle its MIT-licensed procedural chef rigs, art helpers and animation with Three.js, retaining attribution and license text. The room controller and React adapter are native to Summon; no Agenttrail server, provider adapters, automatic setup or extra watcher runs. Unlike Agenttrail’s role-based chefs, each Summon chef is one known session. Cooking, walking and attention gestures illustrate current session activity; they never infer a completed goal, shipped artifact or successful tool result. Animation is optional, honors reduced motion and stops when the document is hidden or the panel unmounts. WebGL failure retains the accessible session list. GitDiagram remains a design reference. All new reads and goal writes are trusted-window IPC; no change is made to the restricted CLI answer or MCP tool boundaries.
+
+
+## 2026-09-20 — Visual sessions span the workstation
+
+The owner clarified that Summon’s visual agent view must show working sessions across projects. Kitchen now opens on All projects and consumes the existing combined session view without filtering out sessions lacking a repository. Project, folder and unassigned scopes are optional filters; working and attention states precede history. Existing reader coverage and visibility settings remain authoritative. Git, codebase maps and goal edits retain explicit repository scope. Session trace reads use the existing known session key through trusted-window IPC independently of Git scans; no new watcher, provider access or MCP capability is introduced.
