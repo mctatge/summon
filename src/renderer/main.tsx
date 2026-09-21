@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Activity as ActivityIcon, ArrowDownToLine, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronDown, CircleHelp, Command, ExternalLink, File, FileSpreadsheet, FileText, Folder, FolderOpen, Gauge, GitBranch, Headphones, History, Inbox, Keyboard, LoaderCircle, MapPin, Mic, MicOff, Monitor, Pause, Play, Plus, Search, Settings2, ShieldCheck, Sparkles, Square, X } from 'lucide-react';
+import { Activity as ActivityIcon, ArrowDownToLine, ArrowRight, ArrowUpRight, CalendarDays, Check, ChevronDown, CircleHelp, Command, ExternalLink, File, FileSpreadsheet, FileText, Folder, FolderOpen, Gauge, GitBranch, Headphones, History, Inbox, Keyboard, LoaderCircle, MapPin, Mic, MicOff, Monitor, NotebookText, LayoutDashboard, Palette, Pause, Play, Plus, Search, Settings2, ShieldCheck, Sparkles, Square, X } from 'lucide-react';
 import type { ClaudeHooksStatus, CommandResult, LocalProposal, FileRecord, SettingsPatch, Snapshot, UsageReport, UsageSettings, UsageView, VoiceMode, VoiceStatus } from './types';
 import { KnowledgePanel } from './KnowledgePanel';
 import { WorkInFlightPanel } from './WorkInFlightPanel';
@@ -12,12 +12,17 @@ import type { AgentSessionsView } from './types';
 import { previewAgentSessions } from './preview';
 import { previewSnapshot } from './preview';
 import './styles.css';
+import './workspace.css';
+import { AccentPicker } from './AccentPicker';
+import { accentVariables } from './appearance';
+import { WorkOverviewCard, SessionsOverviewCard, UsageOverviewCard } from './WorkspaceOverview';
+import { NewTaskDialog } from './NewTaskDialog';
 import { installVoiceController } from './voice';
 
-/* Design brief: a working notebook for finding what just arrived. The command
-   field leads; source → current-location receipts carry the page. Paper, ink,
-   pencil and petrol come from the desk, with 4px spacing, 13px system-native
-   body type and quiet surface shifts. No metrics grid or decorative cards. */
+/* Approved soft monochrome workspace: one person moving between agent tasks.
+   The command card leads; real work, attention and allowance support it. Gray
+   desk, white paper, graphite by default, surface depth and 4px spacing. The
+   accent is one saved choice; semantic status colors retain their meaning. */
 
 const bridge = window.summon;
 const preview = !bridge;
@@ -67,6 +72,10 @@ function App() {
   const [voice, setVoice] = useState<VoiceStatus>({ state: 'off', mode: 'off', micActive: false });
   const [showVoice, setShowVoice] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [page, setPage] = useState<'overview' | 'files'>('overview');
+  const workspaceMain = useRef<HTMLDivElement>(null);
+  const [showNewTask, setShowNewTask] = useState(false);
+  const newTaskButton = useRef<HTMLButtonElement>(null);
   const [showKnowledge, setShowKnowledge] = useState(false);
   const [showWorkInFlight, setShowWorkInFlight] = useState(false);
   const [showSessions, setShowSessions] = useState(false);
@@ -77,6 +86,13 @@ function App() {
   const [enrollment, setEnrollment] = useState<VoiceStatus['enrollment'] | null>(null);
   const input = useRef<HTMLInputElement>(null);
   const settingsButton = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => { workspaceMain.current?.scrollTo({ top: 0 }); }, [page]);
+
+  useEffect(() => {
+    const variables = accentVariables(snapshot?.settings.accentColor);
+    for (const [name, value] of Object.entries(variables)) document.documentElement.style.setProperty(name, value);
+  }, [snapshot?.settings.accentColor]);
 
   useEffect(() => {
     if (!bridge) return;
@@ -96,6 +112,7 @@ function App() {
     };
     const resultListener = (event: Event) => {
       const { text, result: response } = (event as CustomEvent<{ text: string; result: CommandResult }>).detail;
+      setPage('files');
       setQuery(text); setSubmitted(text); setResult(response); setProposal(null); setAnswer(''); setAnswerEngine(''); setAnswerReason('');
       if (response.fileIds?.length) { setSelectedId(response.fileIds[0]); setFilter('all'); }
       void bridge?.showWindow().catch(err => setError(err instanceof Error ? err.message : String(err)));
@@ -109,44 +126,44 @@ function App() {
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); input.current?.focus(); input.current?.select(); }
-      if (event.key === 'Escape' && !showSettings && !showKnowledge && !showWorkInFlight && !showSessions && !showVisuals) { setShowVoice(false); setResult(null); setAnswer(''); setQuery(''); }
+      if (event.key === 'Escape' && !showNewTask && !showSettings && !showKnowledge && !showWorkInFlight && !showSessions && !showVisuals) { setShowVoice(false); setResult(null); setAnswer(''); setQuery(''); }
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showWorkInFlight, showSessions, showVisuals]);
+  }, [showSettings, showKnowledge, showWorkInFlight, showSessions, showVisuals, showNewTask]);
 
   useEffect(() => {
     // ⌘G toggles Work in flight while no other panel is open.
     const listener = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'g' || showSettings || showKnowledge || showSessions || showVisuals) return;
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'g' || showNewTask || showSettings || showKnowledge || showSessions || showVisuals) return;
       event.preventDefault();
       setShowWorkInFlight(value => !value);
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showSessions, showVisuals]);
+  }, [showSettings, showKnowledge, showSessions, showVisuals, showNewTask]);
 
   useEffect(() => {
     // ⌘E toggles Agent sessions while no other panel is open.
     const listener = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'e' || showSettings || showKnowledge || showWorkInFlight || showVisuals) return;
+      if (!(event.metaKey || event.ctrlKey) || event.shiftKey || event.altKey || event.key.toLowerCase() !== 'e' || showNewTask || showSettings || showKnowledge || showWorkInFlight || showVisuals) return;
       event.preventDefault();
       setShowSessions(value => !value);
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showWorkInFlight, showVisuals]);
+  }, [showSettings, showKnowledge, showWorkInFlight, showVisuals, showNewTask]);
 
   useEffect(() => {
     const listener = (event: KeyboardEvent) => {
-      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.key.toLowerCase() !== 'v' || showSettings || showKnowledge || showWorkInFlight || showSessions) return;
+      if (!(event.metaKey || event.ctrlKey) || !event.shiftKey || event.altKey || event.key.toLowerCase() !== 'v' || showNewTask || showSettings || showKnowledge || showWorkInFlight || showSessions) return;
       // Preserve the standard paste-without-formatting shortcut while a text field is being edited.
       if (event.target instanceof Element && event.target.closest('input,textarea,[contenteditable="true"]')) return;
       event.preventDefault(); setShowVisuals(value => !value);
     };
     window.addEventListener('keydown', listener);
     return () => window.removeEventListener('keydown', listener);
-  }, [showSettings, showKnowledge, showWorkInFlight, showSessions]);
+  }, [showSettings, showKnowledge, showWorkInFlight, showSessions, showNewTask]);
 
   useEffect(() => {
     // The menu bar opens a panel here; the main process has already brought the window forward.
@@ -161,7 +178,7 @@ function App() {
   useEffect(() => {
     // The quick-access count checks agent sessions every 20 s, only while this window is visible.
     // While the panel is open it reports its own checks instead.
-    if (!bridge || typeof bridge.agentSessions !== 'function' || showSessions) return;
+    if (!bridge || typeof bridge.agentSessions !== 'function' || showSessions || page === 'overview') return;
     let active = true;
     let busy = false;
     let timer = 0;
@@ -180,7 +197,7 @@ function App() {
     restart();
     document.addEventListener('visibilitychange', restart);
     return () => { active = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', restart); };
-  }, [showSessions]);
+  }, [showSessions, page]);
 
   const run = async (task: () => Promise<unknown>, lock = false) => {
     if (lock) setBusy(true);
@@ -191,6 +208,7 @@ function App() {
 
   const command = async (text: string) => {
     if (!text.trim() || busy) return;
+    setPage('files');
     setQuery(text); setSubmitted(text); setProposal(null); setAnswer(''); setAnswerEngine(''); setAnswerReason('');
     await run(async () => {
       const response = bridge ? await bridge.command(text) : { kind: 'files' as const, message: 'Preview results. Native commands work in the installed app.', fileIds: previewSnapshot.files.filter(file => /excel|workbook/i.test(text) ? workbook(file) : file.name.toLowerCase().includes(text.toLowerCase())).map(file => file.id) };
@@ -198,6 +216,14 @@ function App() {
       if (response.fileIds?.length) { setSelectedId(response.fileIds[0]); setFilter('all'); }
       if (bridge) setSnapshot(await bridge.snapshot());
     }, true);
+  };
+
+  const updateSettings = async (patch: SettingsPatch) => {
+    if (preview) {
+      setSnapshot(value => value ? { ...value, settings: { ...value.settings, ...patch } } : value);
+      return true;
+    }
+    return run(async () => setSnapshot(await bridge!.settings(patch)), true);
   };
 
   const setVoiceMode = (mode: VoiceMode) => {
@@ -227,34 +253,52 @@ function App() {
 
   return <div className="app-shell">
     <header className="titlebar">
-      <div className="wordmark"><Command size={20} strokeWidth={1.8} /><span>summon</span><span className="wordmark-divider" /><span className="wordmark-note">Your working memory</span></div>
+      <div className="wordmark"><Command size={21} strokeWidth={2} /><span>summon</span></div>
       <div className="titlebar-actions">
         {preview ? <span className="preview-badge">Preview · sample data</span> : <button className="observation-status" onClick={() => run(async () => setSnapshot(await bridge!.settings({ paused: !snapshot.settings.paused })))} title={snapshot.settings.paused ? 'Resume observation' : 'Pause observation'}><span className={`status-dot ${snapshot.settings.paused ? 'paused' : snapshot.health.watching ? '' : 'paused'}`} />{snapshot.settings.paused ? 'Paused' : snapshot.health.watching ? 'Observing locally' : 'Starting'}{snapshot.settings.paused ? <Play size={13} /> : <Pause size={13} />}</button>}
-        <button className="icon-button" title="Preferences" aria-label="Preferences" ref={settingsButton} onClick={() => setShowSettings(true)}><Settings2 size={18} /></button>
-        <button className="button visual-entry" title="Visual workspace (⌘⇧V)" onClick={() => setShowVisuals(true)}><Network size={16} />Visual workspace</button>
+        <AccentPicker compact value={snapshot.settings.accentColor} disabled={busy} onChange={color => updateSettings({ accentColor: color })} />
       </div>
     </header>
 
-    <section className="command-deck" aria-label="Command center">
-      <div className="command-heading"><h1>What are you looking for?</h1><span className="local-caption"><ShieldCheck size={13} /> Familiar commands run locally</span></div>
+    <div className="workspace-frame">
+      <nav className="workspace-rail" aria-label="Main navigation">
+        <button className={`workspace-nav-button ${page === 'overview' ? 'is-active' : ''}`} aria-label="Overview" aria-current={page === 'overview' ? 'page' : undefined} onClick={() => setPage('overview')}><LayoutDashboard size={20} /><span>Overview</span></button>
+        <button className="workspace-nav-button" aria-label="Agent sessions" title="Agent sessions (⌘E)" data-sessions-opener="" onClick={() => setShowSessions(true)}><Bot size={20} /><span>Agents</span>{sessionTotals && sessionTotals.needsYou > 0 && <span className="workspace-nav-count" aria-label={`${sessionTotals.needsYou} need you`}>{sessionTotals.needsYou}</span>}</button>
+        <button className="workspace-nav-button" aria-label="Work in flight" title="Work in flight (⌘G)" onClick={() => setShowWorkInFlight(true)}><GitBranch size={20} /><span>Work</span></button>
+        <button className={`workspace-nav-button ${page === 'files' ? 'is-active' : ''}`} aria-label="Files" aria-current={page === 'files' ? 'page' : undefined} onClick={() => setPage('files')}><FolderOpen size={20} /><span>Files</span></button>
+        <button className="workspace-nav-button" aria-label="Memory & routines" disabled={preview} onClick={() => { setRoutineReceipt(null); setShowKnowledge(true); }}><NotebookText size={20} /><span>Memory</span></button>
+        <button className="workspace-nav-button" aria-label="Visual workspace" title="Visual workspace (⌘⇧V)" onClick={() => setShowVisuals(true)}><Network size={20} /><span>Visuals</span></button>
+        <div className="workspace-rail-bottom"><button className="workspace-nav-button" aria-label="Preferences" title="Preferences" ref={settingsButton} onClick={() => setShowSettings(true)}><Settings2 size={20} /><span>Settings</span></button><span className="workspace-local"><ShieldCheck size={13} />Local</span></div>
+      </nav>
+      <div className="workspace-main" ref={workspaceMain}>
+        <header className="workspace-heading"><div><h1>{page === 'overview' ? 'Your workspace' : 'Your files'}</h1><p>{page === 'overview' ? 'A clear view of everything in motion.' : 'Follow what arrived, and where it went.'}</p></div><button ref={newTaskButton} className="button primary workspace-new-task" disabled={busy} onClick={() => setShowNewTask(true)}><Plus size={16} />New task</button></header>
+        <div className={`workspace-grid ${page === 'files' ? 'is-file-view' : ''}`}>
+          <div className="workspace-column">
+    <section className="command-deck workspace-card" aria-label="Command center">
+      <div className="workspace-context"><FolderOpen size={14} /><span>Working in</span><div className="workspace-select"><select aria-label="Current workspace" value={snapshot.currentProjectId || ''} disabled={preview} onChange={event => run(async () => setSnapshot(await bridge!.selectProject(event.target.value || null)))}><option value="">Choose a workspace</option>{snapshot.projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select><ChevronDown size={13} /></div><button className="icon-button small-icon" aria-label="Add workspace" title="Add workspace" disabled={preview} onClick={() => run(async () => setSnapshot(await bridge!.addProject()))}><Plus size={14} /></button></div>
+      <div className="command-heading workspace-greeting"><h2>{page === 'overview' ? <>Room to think.<br />Space to make progress.</> : 'What are you looking for?'}</h2><p>{page === 'overview' ? 'Your context, your agents, and the next thing to move forward.' : 'Ask a question, find a file, or run a familiar command.'}</p></div>
       <form className={`command-input ${busy ? 'busy' : ''}`} onSubmit={event => { event.preventDefault(); void command(query); }}>
         {busy ? <LoaderCircle className="spinner input-symbol" size={21} /> : <Search className="input-symbol" size={21} strokeWidth={1.7} />}
-        <input ref={input} value={query} onChange={event => setQuery(event.target.value)} placeholder="Where did my Excel file go?" aria-label="Ask Summon or find a file" autoFocus autoComplete="off" spellCheck={false} />
+        <input ref={input} value={query} onChange={event => setQuery(event.target.value)} placeholder="Ask Summon or find a file…" aria-label="Ask Summon or find a file" autoFocus autoComplete="off" spellCheck={false} />
         <kbd className="command-shortcut">⌘ K</kbd>
         <div className="voice-control"><button type="button" className={`icon-button mic-button ${voiceActive ? 'is-listening' : ''}`} disabled={preview || (busy && !voiceActive)} aria-label={voiceActive ? 'Stop listening' : 'Voice options'} aria-expanded={showVoice} onClick={() => voiceActive ? setVoiceMode('off') : setShowVoice(!showVoice)}>{voiceActive ? <Square size={15} fill="currentColor" /> : <Mic size={19} />}</button>
           {showVoice && <div className="voice-menu"><div className="menu-label">VOICE ON THIS MAC</div><button type="button" disabled={!snapshot.health.whisper} onClick={() => setVoiceMode('command')}><Mic size={17} /><span>Speak one command<small>Pause to send · tap stop to cancel</small></span></button><button type="button" disabled={!snapshot.health.whisper || !snapshot.wake?.loaded} onClick={() => setVoiceMode('handsfree')}><Headphones size={17} /><span>Listen for "Summon"<small>Dedicated wake detector · microphone stays on</small></span></button>{!snapshot.health.whisper && <button type="button" onClick={() => { setShowVoice(false); setShowSettings(true); }}><CircleHelp size={17} /><span>Set up local voice<small>Choose a Whisper model first</small></span></button>}{snapshot.speaker?.available && <><div className="menu-label">SPEAKER VERIFICATION</div><button type="button" onClick={startEnrollment}><ShieldCheck size={17} /><span>{snapshot.speaker.enrolled ? 'Re-enroll my voice' : 'Enroll my voice'}<small>10 voice samples · on this Mac</small></span></button></>}</div>}
         </div>
         <button className="submit-command" type="submit" disabled={!query.trim() || busy} aria-label="Run command"><ArrowRight size={19} /></button>
       </form>
-      <div className="quick-commands"><span className="try-label">Quick access</span><button title="Work in flight (⌘G)" onClick={() => setShowWorkInFlight(true)}><GitBranch size={13} />Work in flight</button><button title="Agent sessions (⌘E)" data-sessions-opener="" onClick={() => setShowSessions(true)}><Bot size={13} />Agent sessions{sessionTotals && sessionTotals.needsYou + sessionTotals.newReplies > 0 && <span className={`as-quick-count ${sessionTotals.needsYou ? 'needs' : ''}`}><span aria-hidden="true">{sessionTotals.needsYou + sessionTotals.newReplies}</span><span className="sr-only">, {sessionTotals.needsYou ? `${sessionTotals.needsYou} ${sessionTotals.needsYou === 1 ? 'needs' : 'need'} you` : ''}{sessionTotals.needsYou && sessionTotals.newReplies ? ', ' : ''}{sessionTotals.newReplies ? `${sessionTotals.newReplies} new ${sessionTotals.newReplies === 1 ? 'reply' : 'replies'}` : ''}</span></span>}</button><button disabled={preview} onClick={() => run(() => bridge!.openLink('calendar'))}><CalendarDays size={13} />Calendar</button><button onClick={() => void command('find my Excel files')}><FileSpreadsheet size={13} />Recent workbooks</button><button disabled={preview || busy} onClick={() => void command('best coding model')}><Sparkles size={13} />Model rankings<ArrowUpRight size={11} /></button><button disabled={preview} onClick={() => { setRoutineReceipt(null); setShowKnowledge(true); }}><History size={13} />Memory & routines</button>{voiceActive && <span className="voice-state"><span className={`status-dot ${voice.micActive ? '' : 'paused'}`} />{voiceLabel}</span>}</div>
+      <div className="quick-commands"><button onClick={() => setShowSessions(true)}>What needs me?</button><button onClick={() => setShowWorkInFlight(true)}>Where did I leave off?</button><button onClick={() => { setPage('files'); input.current?.focus(); }}>Find a recent file</button>{voiceActive && <span className="voice-state"><span className={`status-dot ${voice.micActive ? '' : 'paused'}`} />{voiceLabel}</span>}</div>
+      {page === 'files' && <div className="workspace-file-tools"><button className="text-button" disabled={preview} onClick={() => run(() => bridge!.openLink('calendar'))}><CalendarDays size={13} />Calendar</button><button className="text-button" onClick={() => void command('find my Excel files')}><FileSpreadsheet size={13} />Recent workbooks</button><button className="text-button" disabled={preview || busy} onClick={() => void command('best coding model')}><Sparkles size={13} />Model rankings</button></div>}
     </section>
 
-    <section className="workspace-strip" aria-label="Current workspace"><span className="eyebrow">WORKING IN</span><div className="workspace-select"><span className={`project-indicator ${currentProject ? '' : 'unassigned'}`} /><select aria-label="Current workspace" value={snapshot.currentProjectId || ''} disabled={preview} onChange={event => run(async () => setSnapshot(await bridge!.selectProject(event.target.value || null)))}><option value="">No workspace selected</option>{snapshot.projects.map(project => <option value={project.id} key={project.id}>{project.name}</option>)}</select><ChevronDown size={13} /></div><span className="workspace-description">{currentProject ? 'Your selection gives new files context.' : 'Choose a workspace to give new files context.'}</span><button className="text-button add-workspace" disabled={preview} onClick={() => run(async () => setSnapshot(await bridge!.addProject()))}><Plus size={14} />Add workspace</button>{(['claude', 'codex'] as const).map(engine => <button key={engine} className="text-button start-agent" disabled={preview || busy || !currentProject} title={currentProject ? `Open ${engine === 'claude' ? 'Claude' : 'Codex'} in Terminal in ${currentProject.name}` : 'Choose a workspace first'} onClick={() => run(async () => { const launched = await bridge!.launchAgent({ app: engine, projectId: snapshot.currentProjectId! }); setResult({ kind: 'message', message: `${launched.app === 'claude' ? 'Claude' : 'Codex'} opened in Terminal for ${currentProject!.name}${launched.hooks ? '' : ' (without Summon hooks: node was not found)'}.` }); })}><Bot size={14} />Start {engine === 'claude' ? 'Claude' : 'Codex'} here</button>)}</section>
+    {page === 'overview' && <WorkOverviewCard bridge={bridge} preview={preview} onOpen={() => setShowWorkInFlight(true)} />}
+          </div>
+          {page === 'overview' && <div className="workspace-column"><SessionsOverviewCard bridge={bridge} preview={preview} onOpen={() => setShowSessions(true)} onView={view => setSessionTotals(view.totals)} /><UsageOverviewCard usage={snapshot.usage} onOpen={() => setShowSettings(true)} /></div>}
+        </div>
 
     {(error || snapshot.health.errors.length > 0) && <div role="alert" className="error-banner"><CircleHelp size={16} /><span>{error || snapshot.health.errors[0]}</span>{snapshot.health.errors.some(message => /Folder access needed|Cannot watch.*E(PERM|ACCES)/.test(message)) && <button className="text-button" onClick={() => run(() => bridge!.openLink('file-access'))}>File access settings<ArrowUpRight size={12} /></button>}{error.includes('Reconnect Claude') && <button className="text-button" onClick={() => run(() => bridge!.openLink('claude-login'))}>Reconnect Claude<ArrowUpRight size={12} /></button>}<button className="text-button" onClick={() => error ? setError('') : setShowSettings(true)}>{error ? 'Dismiss' : 'Preferences'}</button></div>}
     {voice.state === 'error' && <div role="alert" className="error-banner"><MicOff size={16} /><span>{voice.text || 'Voice could not start. Check your microphone permission and local model.'}</span><button className="text-button" onClick={() => setShowSettings(true)}>Voice settings</button></div>}
 
-    <main className="workbench">
+    <main className="workbench" hidden={page !== 'files'}>
       <section className="ledger" aria-label="File ledger">
         <div className="section-heading"><div><span className="eyebrow">THE PAPER TRAIL</span><h2>{result?.kind === 'files' ? 'Found for you' : 'Recent files'}<span className="count">{filteredFiles.length}</span></h2></div><span className="quiet-label"><History size={13} /> {snapshot.settings.retentionDays} day history</span></div>
         <div className="ledger-tabs" role="group" aria-label="Filter files">{([['all', 'All files'], ['workbooks', 'Workbooks'], ['workspace', 'This workspace']] as const).map(([value, label]) => <button key={value} type="button" aria-pressed={filter === value} className={filter === value ? 'active' : ''} disabled={value === 'workspace' && !currentProject} onClick={() => setFilter(value)}>{label}</button>)}{result && <button className="clear-results" onClick={() => { setResult(null); setAnswer(''); setQuery(''); }} aria-label="Clear results"><X size={13} />Clear</button>}</div>
@@ -279,11 +323,14 @@ function App() {
       </aside>
     </main>
     <footer className="app-footer"><span><span className={`status-dot ${preview || snapshot.settings.paused || !snapshot.health.watching ? 'paused' : ''}`} />{preview ? 'Browser preview · native actions disabled' : snapshot.settings.paused ? 'Observation paused' : 'Local activity ledger'}</span><span>{voice.micActive ? <Mic size={12} /> : <MicOff size={12} />}{voiceActive ? voiceLabel : 'Microphone off'}<span className="footer-separator">/</span><button onClick={() => setShowSettings(true)}>Preferences</button></span></footer>
-    {showKnowledge && bridge && <KnowledgePanel snapshot={snapshot} bridge={bridge} receipt={routineReceipt} onClose={() => setShowKnowledge(false)} onSnapshot={setSnapshot} onResult={response => { setResult(response); setQuery(response.completedCommand||''); setSubmitted(response.completedCommand||''); setAnswer(''); setProposal(null); if(response.fileIds?.length){setSelectedId(response.fileIds[0]);setFilter('all');} }} />}
+    </div>
+    </div>
+    {showKnowledge && bridge && <KnowledgePanel snapshot={snapshot} bridge={bridge} receipt={routineReceipt} onClose={() => setShowKnowledge(false)} onSnapshot={setSnapshot} onResult={response => { setPage('files'); setResult(response); setQuery(response.completedCommand||''); setSubmitted(response.completedCommand||''); setAnswer(''); setProposal(null); if(response.fileIds?.length){setSelectedId(response.fileIds[0]);setFilter('all');} }} />}
     {showWorkInFlight && (bridge || preview) && <WorkInFlightPanel bridge={bridge} preview={preview} onClose={() => setShowWorkInFlight(false)} onOpenSessions={() => { setShowWorkInFlight(false); setShowSessions(true); }} />}
     {showSessions && <SessionsPanel bridge={bridge} preview={preview} onClose={() => setShowSessions(false)} onView={view => setSessionTotals(view.totals)} />}
     {showVisuals && <VisualWorkspacePanel bridge={bridge} preview={preview} onClose={() => setShowVisuals(false)} />}
-    {showSettings && <Preferences snapshot={snapshot} busy={busy} onClose={() => { setShowSettings(false); settingsButton.current?.focus(); }} onChange={patch => run(async () => setSnapshot(await bridge!.settings(patch)), true)} onLink={name => run(() => bridge!.openLink(name))} onChooseModel={() => run(async () => setSnapshot(await bridge!.chooseModel()))} onShowWidget={() => run(() => bridge!.showVoiceWidget())} error={error} setVoiceMode={setVoiceMode} voiceActive={handsFreeMode} onEnroll={startEnrollment} onInstallHooks={async () => { const installed = await bridge!.installClaudeHooks(); return installed; }} hookStatus={() => bridge!.claudeHooksStatus()} onRefreshUsage={() => run(async () => { await bridge!.usage({ refresh: true }); setSnapshot(await bridge!.snapshot()); })} onUsageSettings={patch => run(async () => { await bridge!.usageSettings(patch); setSnapshot(await bridge!.snapshot()); })} />}
+    {showSettings && <Preferences snapshot={snapshot} busy={busy} onClose={() => { setShowSettings(false); settingsButton.current?.focus(); }} onChange={updateSettings} onLink={name => run(() => bridge!.openLink(name))} onChooseModel={() => run(async () => setSnapshot(await bridge!.chooseModel()))} onShowWidget={() => run(() => bridge!.showVoiceWidget())} error={error} setVoiceMode={setVoiceMode} voiceActive={handsFreeMode} onEnroll={startEnrollment} onInstallHooks={async () => { const installed = await bridge!.installClaudeHooks(); return installed; }} hookStatus={() => bridge!.claudeHooksStatus()} onRefreshUsage={() => run(async () => { await bridge!.usage({ refresh: true }); setSnapshot(await bridge!.snapshot()); })} onUsageSettings={patch => run(async () => { await bridge!.usageSettings(patch); setSnapshot(await bridge!.snapshot()); })} />}
+    {showNewTask && <NewTaskDialog bridge={bridge} projects={snapshot.projects} currentProjectId={snapshot.currentProjectId} onClose={() => { setShowNewTask(false); newTaskButton.current?.focus(); }} onLaunched={(launched, project) => { setPage('files'); setQuery(''); setSubmitted(''); setAnswer(''); setAnswerEngine(''); setAnswerReason(''); setProposal(null); setResult({ kind: 'message', message: `${launched.app === 'claude' ? 'Claude' : 'Codex'} opened in Terminal for ${project.name}${launched.hooks ? '' : ' (without Summon hooks: node was not found)'}.` }); }} />}
     {enrollment && <EnrollmentOverlay enrollment={enrollment} onCancel={cancelEnrollment} onDismiss={dismissEnrollment} />}
   </div>;
 }
@@ -319,6 +366,7 @@ function Preferences({ snapshot, busy, onClose, onChange, onLink, onChooseModel,
   useEffect(() => { dialog.current?.showModal(); }, []);
   return <dialog className="preferences-dialog" ref={dialog} onCancel={event => { event.preventDefault(); onClose(); }} onClick={event => { if (event.target === dialog.current) onClose(); }}><div className="preferences-content"><header className="preferences-heading"><div><span className="eyebrow">MAKE IT YOURS</span><h2>Preferences</h2></div><button className="icon-button" aria-label="Close preferences" onClick={onClose}><X size={20} /></button></header><div className="preferences-scroll">
     {error && <div className="preferences-error" role="alert">{error}</div>}{preview && <div className="preferences-preview">Preview only. Open the installed app to change preferences.</div>}
+    <section className="preference-section"><h3><Palette size={16} />Appearance</h3><AccentPicker value={snapshot.settings.accentColor} disabled={busy} onChange={color => onChange({ accentColor: color })} /></section>
     <section className="preference-section"><h3><ActivityIcon size={16} />What Summon notices</h3><div className="preference-row"><div><strong>File access</strong><p>Allow the folders you want Summon to watch in macOS Files and Folders.</p></div><button className="text-button" disabled={preview} onClick={() => void onLink('file-access')}>Open settings<ArrowUpRight size={13} /></button></div><div className="preference-row"><div><strong>App activity</strong><p>Record the active app when you switch between apps.</p></div><Toggle label="App activity" checked={snapshot.settings.activityEnabled} disabled={preview || busy} onChange={value => void onChange({ activityEnabled: value })} /></div><div className="preference-row"><div><strong>Window context</strong><p>Read the focused window title and document path when apps provide them.</p></div><Toggle label="Window context" checked={snapshot.settings.accessibilityEnabled} disabled={preview || busy} onChange={value => void onChange({ accessibilityEnabled: value })} /></div><div className="permission-line"><span className={`permission-state ${snapshot.health.accessibility ? 'granted' : ''}`}>{snapshot.health.accessibility ? <Check size={13} /> : <ShieldCheck size={13} />}{snapshot.health.accessibility ? 'Accessibility granted' : 'Accessibility permission needed for window context'}</span><button className="text-button" disabled={preview} onClick={() => void onLink('accessibility')}>Open settings<ArrowUpRight size={13} /></button></div><p className="preference-note">App changes, file events, window titles and paths. No screen recording or keystroke capture.</p></section>
     <section className="preference-section"><h3><Mic size={16} />Voice, on this Mac</h3><div className="preference-row"><div><strong>Desktop voice widget</strong><p>Keep the microphone switch beside your work. Drag the capsule to place it.</p></div><button className="button" disabled={preview} onClick={() => void onShowWidget()}><Mic size={15} />Show widget</button></div><div className="preference-row"><div><strong>Local transcription</strong><p>{snapshot.health.whisper ? 'Whisper is ready for voice commands.' : 'Choose a local Whisper model to enable voice.'}</p></div><span className={`setup-status ${snapshot.health.whisper ? 'ready' : ''}`}>{snapshot.health.whisper ? 'Ready' : 'Setup needed'}</span></div><div className="model-choice"><span title={snapshot.settings.whisperModel}>{snapshot.settings.whisperModel.split('/').pop() || 'No model selected'}</span><button className="button small-button" disabled={preview} onClick={() => void onChooseModel()}>Choose model</button></div><div className="preference-row"><div><strong>Hands-free for this session</strong><p>A small local keyword detector listens for "Summon". Whisper transcribes after it hears the wake word. Keeps the microphone on.</p></div><Toggle label="Hands-free listening" checked={voiceActive} disabled={preview || !snapshot.health.whisper || !snapshot.wake?.loaded} onChange={value => setVoiceMode(value ? 'handsfree' : 'off')} /></div>{snapshot.speaker?.available && <div className="preference-row"><div><strong>Speaker verification</strong><p>{snapshot.speaker.enrolled ? 'Your voice is enrolled. Re-enroll to update your voice profile.' : 'Enroll your voice so Summon verifies commands come from you.'}</p></div><button className="button small-button" disabled={preview} onClick={onEnroll}><ShieldCheck size={13} />{snapshot.speaker.enrolled ? 'Re-enroll' : 'Enroll'}</button></div>}<div className="permission-line"><span className="permission-state"><Keyboard size={13} />Voice can also be started from the command bar.</span><button className="text-button" disabled={preview} onClick={() => void onLink('microphone')}>Microphone settings<ArrowUpRight size={13} /></button></div>{snapshot.fnKey && <div className="permission-line"><span className={`permission-state ${snapshot.fnKey.status === 'ready' ? 'ready' : ''}`}><Keyboard size={13} />{fnKeyLabel(snapshot.fnKey.status)}</span>{snapshot.fnKey.status === 'permission-required' && <button className="text-button" disabled={preview} onClick={() => void onLink('input-monitoring')}>Input Monitoring settings<ArrowUpRight size={13} /></button>}</div>}<p className="preference-note">Listening starts only when you turn it on and is off after every launch. Audio stays on this Mac. The wake detector can miss a phrase or hear a false trigger.</p></section>
     <section className="preference-section"><h3><Bot size={16} />Agents you start</h3><div className="preference-row"><div><strong>Summon hooks for sessions started elsewhere</strong><p>Sessions you start from Summon already report their state. This adds the same hooks to ~/.claude/settings.json so a `claude` you start yourself reports too. Summon backs the file up first and changes nothing else.</p></div><span className={`setup-status ${hooks?.installed ? 'ready' : ''}`}>{hooks?.installed ? 'Installed' : 'Not installed'}</span><button type="button" className="button small-button" disabled={preview || hooksBusy || !onInstallHooks} onClick={() => void installHooks()}>{hooksBusy ? <LoaderCircle size={13} className="spinner" /> : <ShieldCheck size={13} />}{hooks?.installed && !hooks.current ? 'Reinstall Summon hooks' : 'Install Summon hooks'}</button></div>{hooksNote && <p className="preference-note" role="status">{hooksNote}</p>}<p className="preference-note">Codex hooks are reviewed inside Codex itself, so Summon does not install them; Codex sessions started from Summon report when a turn ends.</p></section>

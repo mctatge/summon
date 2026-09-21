@@ -33,6 +33,17 @@ Routine commands use a deterministic command router. No language model runs in t
 | `src/renderer/` | Workbench, preferences, local recording, wake-gated voice and memory controls |
 | `native/Context.swift` | macOS activity and download-source metadata |
 
+## Workspace and appearance
+
+The workbench opens on **Overview**: the command field, unfinished repository work, attention-first agent sessions, and each CLI's reported subscription windows. The navigation rail keeps **Files**, **Agents**, **Work**, **Memory**, **Visuals** and **Settings** within reach. Commands and voice results reveal the Files view, where the existing answer actions, file receipts and activity remain available. **New task** opens a deliberate launcher: choose a workspace and Claude or Codex, then start the installed CLI in Terminal with its existing sign-in and session hooks. Enter the task in Terminal once it opens.
+
+The approved visual direction is a light gray desk, rounded white panels, generous spacing, Avenir Next with local system fallbacks, and a single black accent by default. Use the title-bar swatches or **Settings → Appearance** to choose Black, Forest, Blue, Plum, Terracotta, or a custom hex color. The choice is saved in Summon's local settings and survives restart. Text, hover colors and usage bars derive readable variants; status colors keep their separate meaning. Appearance settings make no network requests.
+
+Overview cards use the existing local services, refreshing while the window is visible. They never start model grouping or mark work as reviewed. Counts and states come from actual records; unfinished work has no invented completion percentage. Unknown or stale usage remains labeled, and the full detail panels remain available through **View all** or **Details**. The browser-only preview continues to use clearly labeled sample data.
+
+The shell and tokens live in `src/renderer/main.tsx`, `styles.css` and `workspace.css`; bounded overview cards in `WorkspaceOverview.tsx`; accent validation and contrast roles in `src/core/appearance.mjs` and `src/renderer/appearance.ts`; the picker in `AccentPicker.tsx`.
+
+
 ## What it observes
 
 **Files.** The service watches direct files in Downloads and Desktop, configured Automatic Filing destination folders, and known subdirectories identified by records or filing receipts. It records names, sizes, paths, filesystem identity, available filesystem dates, source URL metadata, workspace association, and event times. It does not recursively crawl project repositories or open workbook/document contents. [Work in flight](#work-in-flight) is a separate, on-demand, read-only git reader. [Agent sessions](#agent-sessions) reads session details (never conversations) from Claude, Codex, Cursor and Hermes, only when one of its views is on screen, when the menu-bar count checks, when the terminal command runs, or when a connected agent asks.

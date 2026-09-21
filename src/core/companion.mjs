@@ -3,6 +3,7 @@ import { watch, watchFile, unwatchFile } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
+import { DEFAULT_ACCENT, parseAccentColor } from './appearance.mjs';
 
 const VERSION = 1;
 const MAX_FILES = 4000;
@@ -11,7 +12,7 @@ const JOURNAL_CHUNK = 4 * 1024 * 1024;
 const COLORS = ['#aebdab', '#c2b29d', '#a8b8ca', '#c4acba', '#c9c097'];
 const DEFAULTS = {
   paused: false, accessibilityEnabled: false, activityEnabled: true,
-  retentionDays: 30, calendarUrl: '', whisperModel: '', handsFree: false,
+  retentionDays: 30, calendarUrl: '', whisperModel: '', handsFree: false, accentColor: DEFAULT_ACCENT,
   excludedApps: ['com.apple.keychainaccess', 'com.1password.1password', 'com.agilebits.onepassword7', 'com.bitwarden.desktop'],
 };
 const iso = () => new Date().toISOString();
@@ -37,13 +38,18 @@ const publicFile = record => { const { _identity, _filingState, _baseline, ...fi
 const publicProject = record => { const { _origin, ...project } = record; return clone(project); };
 const fileRecency = file => Math.max(...[file.filingAt, file.createdAt, file.modifiedAt, file._baseline ? undefined : file.firstSeenAt].map(value => validDate(value) ? Date.parse(value) : 0));
 
-function normalizeSettings(patch, current = DEFAULTS) {
+function normalizeSettings(patch, current = DEFAULTS, { restoring = false } = {}) {
   if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw new Error('Settings must be an object.');
   const next = clone(current);
   for (const [key, value] of Object.entries(patch)) {
     if (['paused', 'accessibilityEnabled', 'activityEnabled', 'handsFree'].includes(key)) {
       if (typeof value !== 'boolean') throw new Error(`${key} must be true or false.`);
       next[key] = value;
+    } else if (key === 'accentColor') {
+      const color = parseAccentColor(value);
+      if (!color && !restoring) throw new Error('Accent color must be a hex color, such as #141615.');
+      // A damaged cosmetic preference must not discard workspace or file history.
+      next[key] = color ?? DEFAULT_ACCENT;
     } else if (key === 'retentionDays') {
       if (!Number.isInteger(value) || value < 1 || value > 365) throw new Error('Retention must be between 1 and 365 days.');
       next[key] = value;
@@ -63,7 +69,7 @@ function normalizeSettings(patch, current = DEFAULTS) {
 
 function validateState(value) {
   if (!value || value.version !== VERSION || !Array.isArray(value.files) || !Array.isArray(value.events) || !Array.isArray(value.projects) || !Array.isArray(value.receipts)) throw new Error('Unrecognized state schema.');
-  normalizeSettings(value.settings);
+  normalizeSettings(value.settings, DEFAULTS, { restoring: true });
   if (value.files.length > 100000 || value.events.length > 100000 || value.projects.length > 2000 || value.receipts.length > 100000) throw new Error('State exceeds supported limits.');
   const projectIds = new Set();
   for (const p of value.projects) {
@@ -114,7 +120,7 @@ export async function createCompanion({ dataDir, homeDir = os.homedir(), emit = 
     const stat = await fs.lstat(statePath);
     if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('State must be a regular file.');
     state = validateState(JSON.parse(await fs.readFile(statePath, 'utf8')));
-    state.settings = normalizeSettings(state.settings);
+    state.settings = normalizeSettings(state.settings, DEFAULTS, { restoring: true });
     state.baselineAt ||= state.files.length ? iso() : null;
     for (const file of state.files) {
       const source = sourceUrl(file.sourceUrl);
