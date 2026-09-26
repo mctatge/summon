@@ -985,6 +985,12 @@ Owner's instruction: "build the launcher with hooks". Two boundaries widen, both
 
 **Not done:** async hooks, PostToolUseFailure/Subagent/Compact events, Codex hooks, worktree-row launch buttons, chaining the user's own Codex `notify`, reading `hostSessionId` in `pickRegistry()`, deriving unread from Stop events.
 
+## 2026-09-20 — Allow Claude's usage request while disabling telemetry
+
+Claude Code 2.1.278 classifies `/api/oauth/usage` under its essential-traffic gate. The broad `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` flag used by Summon's no-turn probes therefore returns the subscription name and `rate_limits_available:true` but null limits, without reaching the endpoint. A live comparison restored usage windows when replacing that flag with `DISABLE_TELEMETRY=1`, `DISABLE_ERROR_REPORTING=1` and `DISABLE_AUTOUPDATER=1`.
+
+The usage and model-catalog probes share these targeted opt-outs, also setting `DISABLE_FEEDBACK_COMMAND=1`. This supersedes the broad traffic flag and no-configuration-write claim in the original entry below: the CLI may update its own configuration at startup (a metadata change was observed). Summon still reads no credentials or CLI configuration, performs no direct provider HTTP request, sends no prompt, disables hooks/tools/MCP, and takes no model turn. Keep the one-request usage exchange and deadline; null limits remain an error, not a routable zero. [Claude's environment-variable reference](https://code.claude.com/docs/en/env-vars) documents the separate opt-outs.
+
 ## 2026-09-19 — Usage meter: each CLI reports its own limits; Summon routes on them
 
 Owner's instruction: build the usage meter and route on it. One boundary widens and is recorded here; the 2026-09-17 Agent sessions entry ("never runs their CLIs") and the launcher entry above otherwise stand.
@@ -1052,6 +1058,23 @@ Reasoning is enabled by default with a visible Auto/local/Claude/Codex control. 
 
 Inference needs evidence IDs belonging to the same repository/session. Recent user direction outranks the opening title. Generated session names are Summon display labels; explicit native user titles are preserved and source apps are never edited. Inferred goals are labelled, explained and memory-only; adopting one uses the existing explicit goal editor. Existing saved goals/statuses are never rewritten by a model. Polling is minute-spaced, model calls at most once per two minutes for changed evidence (manual refresh can bypass), and pauses for sleep, disabled reasoning and paused observation. Only preferences persist in context-reasoning.json. Excerpts and inferred output are not a new durable memory store.
 
+
+## 2026-09-20 — Benchmark-informed Claude session launch
+
+The owner requested reuse of the council benchmark pipeline and model selection when asking Summon to start a new Claude session. New explicit session commands and the existing launcher button may fetch AI Stupid Level metadata on demand. With no data key, the fixed public dashboard endpoint supplies combined rankings; an explicitly configured key uses the official data API. Both paths retain attribution, source timestamps, bounded responses, one-hour local caching and failure visibility. No background polling, prompt upload, hosted routing inference or new provider credential is introduced.
+
+A bounded, no-turn Claude process reports exact model identities through `initialize` and verifies subscription availability through `get_usage`; account fields are not retained. The selector intersects those identities with healthy measured Anthropic benchmark rows and uses the highest combined score among available Opus/Sonnet/Haiku models. It never upgrades a scored version to a new alias; Fable's separate usage-credit path is excluded. Failed/stale/unmeasured/synthetic/degraded inputs preserve the configured CLI default. Selection is per session, via `--model`, with a visible reason; user model configuration, permission controls and CLI auth stay owned by Claude. A Terminal backend override suppresses this first-party selection.
+
+Explicit text or voice commands can start a new session only in the selected or exactly named saved workspace. Existing vault/sealed-folder guards, hooks and MCP attachment still apply. Launches remain unavailable through the read-only MCP surface and through saved routines. This adds a launch action to the deterministic command path; it does not widen the restricted Ask tool boundary. Public benchmark scores are not a task router; **Ask Auto** continues to choose by subscription quota. Sakana Fugu would be a separate hosted execution-provider decision with its own visible auth and billing, not an implicit replacement of the Claude subscription backend.
+
+
+## 2026-09-20 — Local task-aware routing and explicit answer feedback
+
+The owner asked to extend Summon's own routing without paying a routing provider. Use deterministic local task classification and existing CLI subscription execution. Classification considers only the submitted user's request; context packets, app titles, source text and benchmark prose cannot dictate a route. Provider pins, existing-session affinity, fresh usage and the usage ceiling retain priority. Sufficient explicit answer ratings may prefer an eligible provider for a task/complexity/effort cohort; otherwise quota remains the provider policy. Do not encode unmeasured assumptions such as a particular provider always being better at coding or writing.
+
+Ask and task-described session launches choose low/medium/high reasoning effort. Claude model selection uses exact catalog identities and fresh benchmark observations; quick tasks may choose a lighter eligible family within three combined-score points of the best. This is a policy tolerance, not proof of equal task quality or measured latency. Users can override Ask effort/provider and launch Claude family. No-task launches preserve their existing behavior, and task suffixes never become an executable initial prompt. Custom-backend safeguards remain.
+
+A trusted-window route preview explains the choice without model inference. Ask answers can be rated useful/not useful; runtime completion alone is not quality evidence. Store at most 200 normalized metadata-only outcomes for 30 days in a private file. Store no prompts, answers, paths or credentials in routing history. Ratings may be corrected without increasing sample counts and cleared in the UI. A preference needs three explicit ratings per provider in the same category, complexity and actual effort, an 80% useful rate for the winner and a 20-point advantage. No automatic retries, shadow provider calls or rating-based training requests are introduced. Timing is recorded but does not decide quality. Existing Ask tool restrictions and provider-auth ownership remain unchanged; RPC/MCP recommendations are read-only.
 
 ## 2026-09-20 — Explicit browser demonstrations and bounded procedure reuse
 

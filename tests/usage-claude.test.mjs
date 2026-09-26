@@ -10,7 +10,13 @@ const fake=fileURLToPath(new URL('./fixtures/fake-claude-usage.mjs',import.meta.
 const KEYS=['ANTHROPIC_API_KEY','OPENAI_API_KEY','CODEX_API_KEY'];
 for(const key of KEYS)process.env[key]='test-never-forward';
 process.env.CLAUDECODE='1';process.env.NODE_OPTIONS='--no-warnings';
-after(()=>{for(const key of [...KEYS,'CLAUDECODE','NODE_OPTIONS'])delete process.env[key];});
+const inheritedTrafficFlag=process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1';
+after(()=>{
+  for(const key of [...KEYS,'CLAUDECODE','NODE_OPTIONS'])delete process.env[key];
+  if(inheritedTrafficFlag===undefined)delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  else process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=inheritedTrafficFlag;
+});
 const NOW=Date.UTC(2026,8,19,21,0,0);
 const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const alive=pid=>{try{process.kill(pid,0);return true;}catch(error){return error.code!=='ESRCH';}};
@@ -23,7 +29,8 @@ async function probe(scenario,options={}){
     assert.ok(!args.some(arg=>/[a-z]{6,}\s[a-z]{3,}/.test(arg)),'no prompt text goes to the CLI');
     for(const key of [...KEYS,'NODE_OPTIONS','CLAUDECODE'])assert.equal(spawnOptions.env[key],undefined);
     assert.ok(spawnOptions.env.HOME&&spawnOptions.env.USER,'the allowlist keeps HOME and USER, which the CLI needs to find its login');
-    assert.equal(spawnOptions.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,'1','the probe must not make the CLI rewrite ~/.claude.json or rotate its backups');
+    assert.equal(spawnOptions.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,undefined,'the broad traffic switch blocks the usage endpoint and must not be inherited');
+    for(const key of ['DISABLE_TELEMETRY','DISABLE_ERROR_REPORTING','DISABLE_AUTOUPDATER','DISABLE_FEEDBACK_COMMAND'])assert.equal(spawnOptions.env[key],'1',`${key} keeps optional background clients disabled without blocking usage`);
     assert.equal(args[args.indexOf('--settings')+1],'{"disableAllHooks":true}','hooks are off inside the probe so an installed reporter never sees it as a session');
     const handle=spawnLongLived(process.execPath,[fake,'--scenario',scenario,'--log',log],spawnOptions);spawns.push(handle);return handle;
   }});
@@ -54,7 +61,7 @@ test('junk lines around the answer are ignored',async()=>{
 
 test('limits the CLI could not fetch are a read failure, not 0 % and not a routable reading',async()=>{
   const f=await probe('null-limits');
-  try{assert.deepEqual(f.result,{provider:'claude',plan:'max',status:'error',windows:[],fetchedAt:'2026-09-19T21:00:00.000Z',error:'Claude could not fetch its limits; its usage endpoint did not answer.'});await gone(f.spawns);}
+  try{assert.deepEqual(f.result,{provider:'claude',plan:'max',status:'error',windows:[],fetchedAt:'2026-09-19T21:00:00.000Z',error:'Claude reported its plan but returned no usage limits.'});await gone(f.spawns);}
   finally{await f.cleanup();}
 });
 

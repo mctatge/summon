@@ -6,9 +6,10 @@ import {WINDOWS,authText,exchange,isoAt,percent,plainPlan,report,unanswered,wind
 // No prompt is sent and no quota is spent. Sign-in belongs to the CLI (its own `auth status` is unreliable, so it is
 // not consulted); Summon never sees a token. Not passed on purpose: --setting-sources '' and --bare hide the plan.
 // Hooks are off for this process (--settings disableAllHooks) so an installed Summon reporter never sees the probe as
-// a session, and CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 keeps the CLI from refetching flags, rewriting ~/.claude.json
-// and rotating its backup ring on every read (both measured 2026-09-19; the plan and windows are still reported).
+// a session. Disable optional background clients individually: CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC also blocks
+// the usage endpoint in Claude 2.1.278. The CLI can still maintain its own configuration during startup.
 export const CLAUDE_USAGE_ARGS=Object.freeze(['-p','--input-format','stream-json','--output-format','stream-json','--verbose','--max-turns','1','--tools','','--permission-mode','dontAsk','--strict-mcp-config','--mcp-config','{"mcpServers":{}}','--no-session-persistence','--disable-slash-commands','--settings','{"disableAllHooks":true}']);
+export const CLAUDE_USAGE_ENV=Object.freeze({DISABLE_TELEMETRY:'1',DISABLE_ERROR_REPORTING:'1',DISABLE_AUTOUPDATER:'1',DISABLE_FEEDBACK_COMMAND:'1'});
 const REQUEST_ID='usage-1';
 export const CLAUDE_USAGE_REQUEST=Object.freeze({type:'control_request',request_id:REQUEST_ID,request:{subtype:'get_usage',skip_behaviors:true}});
 const UNREADABLE='Claude returned an answer Summon could not read.';
@@ -18,7 +19,7 @@ export async function readClaudeUsage({executable=findExecutable,spawnChild=spaw
   const fetchedAt=new Date(now()).toISOString(),done=(status,extra)=>report('claude',fetchedAt,status,extra);
   let binary;
   try{binary=typeof executable==='string'?executable:await executable('claude');}catch(error){return done('not_installed',{error:error.message});}
-  const outcome=await exchange({binary,args:[...CLAUDE_USAGE_ARGS],env:scrubbedEnv({CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:'1'}),spawnChild,timeoutMs,
+  const outcome=await exchange({binary,args:[...CLAUDE_USAGE_ARGS],env:scrubbedEnv(CLAUDE_USAGE_ENV),spawnChild,timeoutMs,
     open:send=>send(CLAUDE_USAGE_REQUEST),
     onMessage:message=>{
       if(message.type==='control_response'){
@@ -40,8 +41,8 @@ export async function readClaudeUsage({executable=findExecutable,spawnChild=spaw
   const body=response.response,plan=plainPlan(body.subscription_type);
   // No subscription, or limits the CLI will not report: nothing to meter, which is not the same as 0 % used.
   if(body.rate_limits_available!==true||!plan)return done('not_applicable',{plan});
-  // rate_limits:null with the flag true is the CLI saying its own usage fetch failed (expired token, 5xx): a read failure, not 0 %.
-  if(!isObject(body.rate_limits))return done('error',{plan,error:'Claude could not fetch its limits; its usage endpoint did not answer.'});
+  // rate_limits:null with the flag true means the CLI returned no limits, without identifying why: unknown, not 0 %.
+  if(!isObject(body.rate_limits))return done('error',{plan,error:'Claude reported its plan but returned no usage limits.'});
   const limits=body.rate_limits,windows=[];
   for(const id of Object.keys(WINDOWS)){
     const window=limits[id];if(!isObject(window))continue;

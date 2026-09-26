@@ -3,8 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import { createLauncher, claudeHooksSettings } from '../src/main/launcher.mjs';
 import { setSealedSegments } from '../src/core/workstreams.mjs';
+import { WORK_CHECKPOINT_INSTRUCTIONS } from '../src/core/work-item-protocol.mjs';
 
 // The sealed-folder guard is empty until configured; these fixtures seal any path segment containing 'sealed-client'.
 setSealedSegments(['sealed-client']);
@@ -15,10 +18,10 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const NODE = '/opt/homebrew/bin/node';
 const CLAUDE = '/Users/someone/.local/bin/claude';
 const CODEX = '/Applications/ChatGPT.app/Contents/Resources/codex';
-const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SessionEnd'];
+const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PermissionRequest', 'Notification', 'Stop', 'StopFailure', 'SubagentStart', 'SubagentStop', 'SessionEnd'];
 const HEADER = '#!/bin/zsh\n# Written by Summon for one launch; safe to delete.\nset -eu\nunset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_API_KEY CLAUDECODE NODE_OPTIONS\n';
 
-async function fixture(t, { node = NODE, packaged = false } = {}) {
+async function fixture(t, { node = NODE, packaged = false, benchmark, readModels } = {}) {
   const tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'summon-launch-')));
   t.after(() => fs.rm(tmp, { recursive: true, force: true }));
   const homeDir = path.join(tmp, 'home');
@@ -39,7 +42,7 @@ async function fixture(t, { node = NODE, packaged = false } = {}) {
     { id: 'project-gone', name: 'Gone', path: path.join(homeDir, 'Projects', 'Gone'), color: 'ink' },
   ];
   const launcher = createLauncher({
-    dataDir, homeDir, root, resourcesPath, isPackaged: packaged,
+    dataDir, homeDir, root, resourcesPath, isPackaged: packaged, benchmark, readModels,
     run: async (binary, args) => { runs.push([binary, [...args]]); },
     executable: async name => { if (!binaries[name]) throw new Error(`${name} is not installed. Install it, then restart Summon.`); return binaries[name]; },
     getProjects: async () => projects,
@@ -66,7 +69,7 @@ test('Claude launches from a per-launch 0700 .command with a session id, the hoo
   assert.equal(script.name, `claude-Hackathon - API World 2026-${result.tag.slice(0, 8)}.command`);
   const hooksFile = path.join(f.dataDir, 'claude-hooks.json');
   const mcpFile = path.join(f.dataDir, 'claude-mcp.json');
-  assert.equal(script.text, `${HEADER}cd ${sh(f.folder)}\nexec ${sh(CLAUDE)} --session-id ${sh(result.tag)} --settings ${sh(hooksFile)} --mcp-config ${sh(mcpFile)}\n`);
+  assert.equal(script.text, `${HEADER}cd ${sh(f.folder)}\nexec ${sh(CLAUDE)} --session-id ${sh(result.tag)} --settings ${sh(hooksFile)} --mcp-config ${sh(mcpFile)} --append-system-prompt ${sh(WORK_CHECKPOINT_INSTRUCTIONS)}\n`);
   assert.ok(script.text.includes("it'\\''s"), 'the apostrophe in the folder is escaped for zsh');
   assert.ok(!script.text.includes('--strict-mcp-config') && !script.text.includes('--bare') && !script.text.includes('--safe-mode'));
   assert.deepEqual(f.runs, [['/usr/bin/open', ['-a', 'Terminal', script.file]]]);
@@ -109,6 +112,7 @@ test('Codex launches with a per-session notify and MCP override, TOML-escaped, a
   assert.equal(script.text, `${HEADER}cd ${sh(f.folder)}\nexec ${sh(CODEX)} -C ${sh(f.folder)} -c ${sh(notify)} -c ${sh(`mcp_servers.summon.command=${JSON.stringify(NODE)}`)} -c ${sh(`mcp_servers.summon.args=[${JSON.stringify(mcpServer)}]`)}\n`);
   assert.ok(script.text.includes('repo \\"q\\"'), 'quotes in a path are escaped for TOML');
   assert.ok(!script.text.includes('hooks.') && !script.text.includes('--dangerously-bypass-hook-trust') && !/ -p /.test(script.text));
+  assert.ok(!script.text.includes('developer_instructions') && !script.text.includes('--append-system-prompt'), 'Codex uses MCP instructions without replacing its configured developer instructions');
   assert.deepEqual(f.launches, [{ app: 'codex', tag: result.tag, cwd: f.folder, projectId: 'project-hack', sessionId: null }]);
   assert.deepEqual(f.runs, [['/usr/bin/open', ['-a', 'Terminal', script.file]]]);
   await assert.rejects(fs.stat(path.join(f.dataDir, 'claude-hooks.json')), /ENOENT/, 'Codex writes no Claude settings');
@@ -140,6 +144,7 @@ test('without node the launch still opens Terminal, with no hooks and no attache
   assert.deepEqual([claude.hooks, claude.mcp], [false, 'none']);
   const script = await onlyCommand(f);
   assert.equal(script.text, `${HEADER}cd ${sh(f.folder)}\nexec ${sh(CLAUDE)} --session-id ${sh(claude.tag)}\n`);
+  assert.ok(!script.text.includes('work_items') && !script.text.includes('--append-system-prompt'), 'a session without Summon MCP does not advertise checkpoint tools');
   await assert.rejects(fs.stat(path.join(f.dataDir, 'claude-hooks.json')), /ENOENT/);
   await fs.unlink(script.file);
   const codex = await f.launcher.launch({ app: 'codex', projectId: 'project-hack' });
@@ -283,4 +288,175 @@ test('package.json bundles the reporter, the MCP server and both sign-in scripts
   assert.equal(resources['scripts/codex-login.command'], 'codex-login.command');
   assert.equal(resources['scripts/claude-login.command'], 'claude-login.command');
   assert.ok(pkg.build.files.includes('scripts/summon-hook.mjs'));
+});
+
+
+const rankings = () => ({source:'https://aistupidlevel.info/',sourceKind:'public-dashboard',actualCategory:'combined',category:'combined',fetchedAt:new Date().toISOString(),models:[
+  {name:'claude-sonnet-5',provider:'anthropic',score:84,lastUpdated:new Date().toISOString(),status:'good',rankable:true},
+  {name:'claude-opus-5',provider:'anthropic',score:81,lastUpdated:new Date().toISOString(),status:'good',rankable:true},
+]});
+const catalog = () => ({status:'ok',models:[{id:'claude-sonnet-5',model:'claude-sonnet-5',name:'Sonnet 5'},{id:'claude-opus-5',model:'claude-opus-5[1m]',name:'Opus 5'}]});
+
+test('Claude receives checkpoint guidance as one argument for attached and global MCP on either backend branch',async t=>{
+  for(const globalMcp of [false,true]){
+    const f=await fixture(t,{benchmark:async()=>rankings(),readModels:async()=>catalog()});
+    if(globalMcp)await fs.writeFile(path.join(f.homeDir,'.claude.json'),JSON.stringify({mcpServers:{summon:{command:NODE,args:['/configured/mcp-server.mjs']}}}));
+    const fakeCli=path.join(f.tmp,"checkpoint CLI's argv");
+    // NUL delimiters retain spaces, quotes and newlines so the complete instruction must remain one argv item.
+    await fs.writeFile(fakeCli,'#!/bin/zsh -f\nprintf \'%s\\0\' SUMMON_ARGV "$@"\n',{mode:0o700});
+    f.binaries.claude=fakeCli;
+    const task="debug a complex race SECRET_CHECKPOINT_TASK; $(touch /tmp/never-run-checkpoint-task)";
+    const launched=await f.launcher.launch({app:'claude',projectId:'project-hack',task});
+    assert.equal(launched.mcp,globalMcp?'global':'attached');
+    const script=await onlyCommand(f);
+    assert.ok(script.text.includes(`--append-system-prompt ${sh(WORK_CHECKPOINT_INSTRUCTIONS)}`));
+    assert.doesNotMatch(script.text,/SECRET_CHECKPOINT_TASK|never-run-checkpoint-task/);
+    assert.equal(JSON.stringify(f.launches).includes('SECRET_CHECKPOINT_TASK'),false);
+    assert.equal(JSON.stringify(launched).includes('SECRET_CHECKPOINT_TASK'),false);
+    for(const customBackend of [false,true]){
+      const {stdout}=await promisify(execFile)('/bin/zsh',['-f',script.file],{env:{PATH:'/usr/bin:/bin',...(customBackend?{ANTHROPIC_BASE_URL:'fixture-custom-backend'}:{})},timeout:3000});
+      const marker='SUMMON_ARGV\0';
+      assert.ok(stdout.includes(marker));
+      const args=stdout.slice(stdout.indexOf(marker)+marker.length).split('\0').slice(0,-1);
+      const expected=['--session-id',launched.sessionId,'--settings',path.join(f.dataDir,'claude-hooks.json'),
+        ...(!globalMcp?['--mcp-config',path.join(f.dataDir,'claude-mcp.json')]:[]),
+        '--append-system-prompt',WORK_CHECKPOINT_INSTRUCTIONS,
+        ...(!customBackend?['--model','claude-sonnet-5','--effort','high']:[])];
+      assert.deepEqual(args,expected);
+    }
+  }
+});
+
+test('Claude launch intersects current rankings with the CLI catalog and passes the exact session model',async t=>{
+  const calls=[];
+  const f=await fixture(t,{benchmark:async category=>{calls.push(category);return rankings();},readModels:async options=>{calls.push(options);return catalog();}});
+  const result=await f.launcher.launch({app:'claude',projectId:'project-hack'});
+  assert.equal(result.modelSelection.model,'claude-sonnet-5');
+  assert.equal(result.modelSelection.score,84);
+  assert.deepEqual(calls,['combined',{executable:CLAUDE,cwd:f.folder}]);
+  const script=await onlyCommand(f);
+  assert.match(script.text,/--model 'claude-sonnet-5'/);
+  assert.match(script.text,/printf '%s\\n'/);
+  assert.ok(script.text.includes('--session-id')&&script.text.includes('--settings')&&script.text.includes('--mcp-config'));
+  await assert.rejects(fs.stat(path.join(f.homeDir,'.claude','settings.json')),/ENOENT/);
+});
+
+test('missing rankings or unavailable catalog keep the configured Claude default and explain the fallback',async t=>{
+  for(const [benchmark,readModels] of [
+    [async()=>({...rankings(),stale:true}),async()=>catalog()],
+    [async()=>{throw new Error('offline');},async()=>catalog()],
+    [async()=>rankings(),async()=>({status:'not_applicable',models:[]})],
+  ]){
+    const f=await fixture(t,{benchmark,readModels});
+    const result=await f.launcher.launch({app:'claude',projectId:'project-hack'});
+    assert.equal(result.modelSelection.model,null);
+    assert.match(result.modelSelection.reason,/default/i);
+    assert.doesNotMatch((await onlyCommand(f)).text,/--model/);
+  }
+});
+
+test('Codex and refused Claude folders never fetch rankings or probe the model catalog',async t=>{
+  let calls=0;
+  const f=await fixture(t,{benchmark:async()=>{calls++;return rankings();},readModels:async()=>{calls++;return catalog();}});
+  const result=await f.launcher.launch({app:'codex',projectId:'project-hack'});
+  assert.equal(result.modelSelection,undefined);
+  await assert.rejects(f.launcher.launch({app:'claude',projectId:'project-vault'}),/vault/);
+  await assert.rejects(f.launcher.launch({app:'claude',projectId:'project-sealed'}),/sealed/);
+  assert.equal(calls,0);
+});
+
+test('generated shell passes the selected model only without custom backend overrides and removes provider keys',async t=>{
+  const f=await fixture(t,{node:null,benchmark:async()=>rankings(),readModels:async()=>catalog()});
+  const fakeCli=path.join(f.tmp,"fake Claude's CLI");
+  // This executable only reports argv. It cannot connect to a provider or start a model turn.
+  await fs.writeFile(fakeCli,'#!/bin/zsh -f\nif [[ -n "${ANTHROPIC_API_KEY:-}${OPENAI_API_KEY:-}${CODEX_API_KEY:-}${CLAUDECODE:-}${NODE_OPTIONS:-}" ]]; then exit 90; fi\nprintf \'ARG:%s\\n\' "$@"\n',{mode:0o700});
+  f.binaries.claude=fakeCli;
+  const launched=await f.launcher.launch({app:'claude',projectId:'project-hack'});
+  const script=await onlyCommand(f),execute=promisify(execFile);
+  const cases=[{},...['ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY'].map(key=>({[key]:'fixture-custom-backend'}))];
+  for(const overrides of cases){
+    const {stdout,stderr}=await execute('/bin/zsh',['-f',script.file],{env:{PATH:'/usr/bin:/bin',ANTHROPIC_API_KEY:'fixture-key',OPENAI_API_KEY:'fixture-key',CODEX_API_KEY:'fixture-key',CLAUDECODE:'fixture-session',NODE_OPTIONS:'fixture-options',...overrides},timeout:3000});
+    const args=stdout.split('\n').filter(line=>line.startsWith('ARG:')).map(line=>line.slice(4));
+    assert.equal(stderr,'');
+    if(Object.keys(overrides).length){
+      assert.deepEqual(args,['--session-id',launched.sessionId]);
+      assert.match(stdout,/Custom Claude backend detected; using its configured default/);
+      assert.doesNotMatch(stdout,/ranks claude-sonnet-5 highest/);
+    }else{
+      assert.deepEqual(args,['--session-id',launched.sessionId,'--model','claude-sonnet-5']);
+      assert.match(stdout,/ranks claude-sonnet-5 highest/);
+    }
+  }
+});
+
+test('task context selects session effort without saving or executing the user task',async t=>{
+  const f=await fixture(t,{benchmark:async()=>rankings(),readModels:async()=>catalog()});
+  const task="debug a complex race condition SECRET_TASK_CONTEXT; $(touch /tmp/never-created-by-summon)";
+  const result=await f.launcher.launch({app:'claude',projectId:'project-hack',task});
+  assert.deepEqual([result.routing.kind,result.routing.complexity,result.routing.effort,result.routing.effortSource],['coding','complex','high','task']);
+  const script=await onlyCommand(f);
+  assert.match(script.text,/--effort 'high'/);
+  assert.doesNotMatch(script.text,/SECRET_TASK_CONTEXT|never-created-by-summon|--prompt|--print| -p /);
+  assert.equal(JSON.stringify(f.launches).includes('SECRET_TASK_CONTEXT'),false,'the launch ledger does not persist task context');
+  assert.equal(JSON.stringify(result).includes('SECRET_TASK_CONTEXT'),false,'the receipt does not retain task context');
+});
+
+test('an explicit known Claude family survives benchmark errors and explicit effort wins over classification',async t=>{
+  const f=await fixture(t,{benchmark:async()=>{throw new Error('offline');},readModels:async()=>catalog()});
+  const result=await f.launcher.launch({app:'claude',projectId:'project-hack',task:'debug a complex race condition',modelPreference:'sonnet',effort:'low'});
+  assert.equal(result.modelSelection.model,'claude-sonnet-5');
+  assert.equal(result.routing.effort,'low');
+  assert.equal(result.routing.effortSource,'override');
+  const script=await onlyCommand(f);
+  assert.match(script.text,/--model 'claude-sonnet-5'/);
+  assert.match(script.text,/--effort 'low'/);
+  assert.doesNotMatch(script.text,/--effort 'high'/);
+  assert.equal(result.modelSelection.source,undefined);
+});
+
+test('Codex task launches set per-call reasoning effort, keep model config and do not execute a prompt',async t=>{
+  let probes=0;
+  const f=await fixture(t,{node:null,benchmark:async()=>{probes++;return rankings();},readModels:async()=>{probes++;return catalog();}});
+  const fakeCli=path.join(f.tmp,'inert-codex');
+  await fs.writeFile(fakeCli,'#!/bin/zsh -f\nprintf \'ARG:%s\\n\' "$@"\n',{mode:0o700});
+  f.binaries.codex=fakeCli;
+  const result=await f.launcher.launch({app:'codex',projectId:'project-hack',task:'briefly explain this SECRET_CODEX_TASK'});
+  const script=await onlyCommand(f);
+  const {stdout}=await promisify(execFile)('/bin/zsh',['-f',script.file],{env:{PATH:'/usr/bin:/bin'},timeout:3000});
+  const args=stdout.split('\n').filter(line=>line.startsWith('ARG:')).map(line=>line.slice(4));
+  assert.deepEqual(args,['-C',f.folder,'-c','model_reasoning_effort="low"']);
+  assert.doesNotMatch(script.text,/SECRET_CODEX_TASK|--model|--prompt|--print/);
+  assert.equal(result.routing.effort,'low');
+  assert.equal(probes,0);
+});
+
+test('malformed routing options are refused before any probe, file write or launch',async t=>{
+  let probes=0;
+  const f=await fixture(t,{benchmark:async()=>{probes++;return rankings();},readModels:async()=>{probes++;return catalog();}});
+  for(const options of [
+    null,[],{task:42},{task:'x'.repeat(1001)},{task:'one\ntwo'},{task:'embedded\u0000nul'},
+    {modelPreference:'--model hacked'},{modelPreference:null},{effort:'max'},{effort:null},{app:'codex',modelPreference:'opus'},
+  ])await assert.rejects(f.launcher.launch(options===null||Array.isArray(options)?options:{app:'claude',projectId:'project-hack',...options}));
+  assert.equal(probes,0);
+  assert.deepEqual(f.runs,[]);
+  assert.deepEqual(f.launches,[]);
+  await assert.rejects(fs.stat(launchDir(f)),/ENOENT/);
+});
+
+test('custom Claude backends discard automatic effort but preserve an explicit effort override',async t=>{
+  for(const explicit of [false,true]){
+    const f=await fixture(t,{node:null,benchmark:async()=>rankings(),readModels:async()=>catalog()});
+    const fakeCli=path.join(f.tmp,'inert-claude');
+    await fs.writeFile(fakeCli,'#!/bin/zsh -f\nprintf \'ARG:%s\\n\' "$@"\n',{mode:0o700});
+    f.binaries.claude=fakeCli;
+    const result=await f.launcher.launch({app:'claude',projectId:'project-hack',task:'debug a complex problem SECRET_SHELL_CONTEXT',...(explicit?{effort:'low'}:{})});
+    const script=await onlyCommand(f);
+    for(const key of ['ANTHROPIC_BASE_URL','ANTHROPIC_AUTH_TOKEN','CLAUDE_CODE_USE_BEDROCK','CLAUDE_CODE_USE_VERTEX','CLAUDE_CODE_USE_FOUNDRY']){
+      const {stdout}=await promisify(execFile)('/bin/zsh',['-f',script.file],{env:{PATH:'/usr/bin:/bin',[key]:'fixture-custom-backend'},timeout:3000});
+      const args=stdout.split('\n').filter(line=>line.startsWith('ARG:')).map(line=>line.slice(4));
+      assert.deepEqual(args,['--session-id',result.sessionId,...(explicit?['--effort','low']:[])]);
+      assert.match(stdout,/Custom Claude backend detected/);
+      assert.doesNotMatch(stdout,/SECRET_SHELL_CONTEXT/);
+    }
+  }
 });

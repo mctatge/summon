@@ -80,13 +80,12 @@ Key facts (verified against code.claude.com/docs/en/agent-sdk, v0.3.234 Aug 2026
 ### Auth (the whole point)
 
 - User runs `claude login` **in a real terminal**. The SDK reuses the Claude Code
-  CLI's stored OAuth from the macOS Keychain item "Claude Code-credentials".
+  CLI's stored OAuth from the macOS Keychain.
   **Verified 2026-08-20 — being signed into the Claude *desktop app* is NOT
-  sufficient**: the desktop app keeps its live token in its own Electron
-  safeStorage vault ("Claude Safe Storage"), leaving "Claude Code-credentials" as
-  a stale stub with a zero-length `refreshToken` that cannot self-refresh. On this
-  machine that item's token had been expired for 60 days while the desktop app
-  worked fine, and every SDK call 401'd.
+  sufficient**: the desktop app keeps its live token in its own safeStorage
+  vault, which can leave the CLI's stored credential a stale stub that cannot
+  refresh itself; on the test machine every SDK call then returned 401 while
+  the desktop app worked fine.
 - **`ANTHROPIC_API_KEY` must be unset** in the spawned env — if present it silently
   flips to metered API billing. The engine explicitly deletes it from the child env
   and surfaces which auth mode is active in the UI (a "subscription / API / none"

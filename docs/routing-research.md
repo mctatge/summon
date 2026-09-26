@@ -596,3 +596,8 @@ The capture regression used 1.024 seconds of synthetic speech followed by 0.018 
 Validation: 118 automated tests, TypeScript, native build, complete Electron UI/synthetic speech flow, and desktop Stop/Hide/lock tests passed. Voice stays off across the installation restart; activity pause settings and model selection remain user-owned.
 
 Final installed-path preparation: GPU backend/shader setup 17.323 seconds, model load 0.513 seconds, total ready 19.102 seconds. A fresh worker at the same installed path then prepared in 2.024 seconds and transcribed the workbook fixture correctly in 1.468 seconds (1.431 seconds decode). Both closed cleanly. This confirms that copying the signed helper to its installed path can require another initial shader preparation; prepare the installed path, not just the staging bundle. The app was relaunched and its desktop widget visibly showed Microphone off.
+
+
+## 2026-09-20 implementation update
+
+The local rules-plus-measurement step is now implemented in `src/main/task-routing.mjs`, `engine-choice.mjs` and `task-router.mjs`, with bounded explicit feedback. See [Task routing](desktop-companion.md#task-routing) for current behavior and thresholds. Rules choose reasoning effort; user-rated task cohorts can choose between available subscriptions; quota is the fallback. Claude's exact live model catalog intersects fresh public combined benchmark scores for model selection. This does not implement the earlier embedding workspace-router proposal or a trained model router, and does not integrate Sakana Fugu. No claim of routing accuracy is made from the earlier research numbers; regression fixtures verify the implemented policy, and actual useful/not-useful ratings are accumulated separately.

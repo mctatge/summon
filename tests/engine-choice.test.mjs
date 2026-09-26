@@ -56,3 +56,80 @@ test('unknown usage is never 0 %: the known provider is used while it has room, 
   assert.deepEqual(chooseEngine({usage:usage(ok('claude',90,10),off('codex','error')),settings:{defaultEngine:'codex'}}),{engine:'codex',reason:'Claude is over the 85% ceiling and Codex usage is unknown (could not be read); your default'});
   assert.deepEqual(chooseEngine({usage:usage(ok('claude',90,10),off('codex','error'))}),{engine:'claude',reason:'Claude is over the 85% ceiling and Codex usage is unknown (could not be read); your default'});
 });
+
+const now=Date.UTC(2026,8,20,22);
+const rated=(engine,ratings,extra={})=>ratings.map((rating,index)=>({id:`${engine}-${index}`,at:new Date(now-1000).toISOString(),engine,kind:'coding',complexity:'standard',effort:'medium',model:null,elapsedMs:1000,completed:true,rating,policyVersion:1,...extra}));
+const history=[...rated('claude',['useful','useful','useful','useful','not-useful']),...rated('codex',['useful','useful','useful','not-useful','not-useful'])];
+const taskOptions={task:{text:'Refactor this function'},usage:usage(ok('claude',60,40),ok('codex',10,10)),now};
+
+test('task profiles affect effort without creating a provider stereotype',()=>{
+  const choice=chooseEngine(taskOptions);
+  assert.equal(choice.engine,'codex');assert.equal(choice.profile.kind,'coding');assert.equal(choice.effort,'medium');assert.equal(choice.policyVersion,1);
+  assert.match(choice.reason,/5-hour.*standard coding task; medium effort/);
+  const other=chooseEngine({...taskOptions,usage:usage(ok('claude',10,10),ok('codex',60,40))});
+  assert.equal(other.engine,'claude','coding does not inherently favor Codex');
+  const writing=chooseEngine({...taskOptions,task:{text:'Draft a brief email'}});
+  assert.equal(writing.engine,'codex');assert.equal(writing.effort,'low');
+  const complex=chooseEngine({...taskOptions,task:{text:'Debug a complex race condition'}});
+  assert.equal(complex.effort,'high');
+});
+
+test('explicit pins and running threads remain authoritative with task feedback',()=>{
+  for(const pinned of ['claude','codex']){
+    const choice=chooseEngine({...taskOptions,task:{text:'Refactor this function',engine:pinned},outcomes:history});
+    assert.equal(choice.engine,pinned);assert.match(choice.reason,/^pinned\./);
+  }
+  const running=chooseEngine({...taskOptions,task:{text:'Refactor this function',running:'codex'},outcomes:history});
+  assert.equal(running.engine,'codex');assert.match(running.reason,/running thread is never switched/);
+  assert.deepEqual(chooseEngine({...taskOptions,task:{text:' '},outcomes:history}),chooseEngine({...taskOptions,task:{}}),'blank task preserves the old contract');
+});
+
+test('manual effort selects the matching feedback cohort without changing task classification',()=>{
+  const overridden={...taskOptions,task:{...taskOptions.task,effort:'high'}};
+  const normalHistory=chooseEngine({...overridden,outcomes:history});
+  assert.equal(normalHistory.engine,'codex','medium effort outcomes do not choose a high effort provider');
+  assert.equal(normalHistory.effort,'high');assert.equal(normalHistory.profile.effort,'medium');assert.equal(normalHistory.profile.complexity,'standard');
+  assert.match(normalHistory.reason,/high effort \(your override\)/);
+  const highHistory=chooseEngine({...overridden,outcomes:history.map(row=>({...row,effort:'high'}))});
+  assert.equal(highHistory.engine,'claude');
+  assert.equal(chooseEngine({...taskOptions,task:{...taskOptions.task,effort:'invalid'},outcomes:history}).effort,'medium');
+});
+
+test('enough explicit quality feedback can override quota preference within the ceiling',()=>{
+  const choice=chooseEngine({...taskOptions,outcomes:history});
+  assert.equal(choice.engine,'claude');assert.match(choice.reason,/explicit feedback.*4\/5 useful vs Codex 3\/5/);
+  assert.equal(chooseEngine({...taskOptions,outcomes:history.map(row=>({...row,at:now-30*86400000}))}).engine,'claude','the 30-day edge is included');
+  assert.equal(chooseEngine({...taskOptions,usage:usage(ok('claude',85,10),ok('codex',10,10)),outcomes:history}).engine,'codex','feedback never overrides a quota ceiling');
+  assert.equal(chooseEngine({...taskOptions,usage:usage(off('claude','error'),ok('codex',10,10)),outcomes:history}).engine,'codex','feedback never treats unknown usage as available');
+});
+
+test('feedback needs three ratings per engine, 80 percent useful, and a 20 point advantage',()=>{
+  for(const outcomes of [
+    [...rated('claude',['useful','useful']),...rated('codex',['not-useful','not-useful','not-useful'])],
+    [...rated('claude',['useful','useful','useful']),...rated('codex',['not-useful','not-useful'])],
+    [...rated('claude',['useful','useful','not-useful']),...rated('codex',['not-useful','not-useful','not-useful'])],
+    [...rated('claude',['useful','useful','useful','useful','not-useful']),...rated('codex',['useful','useful','useful','useful','useful','useful','useful','not-useful','not-useful','not-useful'])],
+    history.map(row=>({...row,rating:null})),
+  ])assert.equal(chooseEngine({...taskOptions,outcomes}).engine,'codex');
+  const minimum=[...rated('claude',['useful','useful','useful']),...rated('codex',['useful','useful','not-useful'])];
+  assert.equal(chooseEngine({...taskOptions,outcomes:minimum}).engine,'claude');
+});
+
+test('old, mismatched, duplicate, uncompleted and malformed outcomes cannot inflate quality',()=>{
+  for(const extra of [
+    {at:new Date(now-30*86400000-1).toISOString()},{at:now+1},{at:'bad'},
+    {kind:'writing'},{complexity:'quick'},{effort:'high'},{completed:false},{completed:'yes'},
+    {rating:'success'},{policyVersion:2},{policyVersion:undefined},{elapsedMs:-1},{elapsedMs:Infinity},
+    {id:''},{id:3},{model:undefined},{model:[]},
+  ])assert.equal(chooseEngine({...taskOptions,outcomes:history.map(row=>({...row,...extra}))}).engine,'codex',JSON.stringify(extra));
+  const repeated=[...rated('claude',['useful','useful'],{id:'same'}),...rated('codex',['not-useful','not-useful','not-useful'])];
+  assert.equal(chooseEngine({...taskOptions,outcomes:[...repeated,...repeated,...repeated,null,[]]}).engine,'codex');
+  for(const outcomes of [null,{},'useful'])assert.equal(chooseEngine({...taskOptions,outcomes}).engine,'codex');
+});
+
+test('malformed usage cannot supply a zero-cost preference or crash task routing',()=>{
+  for(const windows of [undefined,{},[null],[{usedPercent:NaN}],[{usedPercent:-1}],[{usedPercent:101}]]){
+    const result=chooseEngine({...taskOptions,usage:usage({status:'ok',windows},ok('codex',10,10)),outcomes:history});
+    assert.equal(result.engine,'codex');
+  }
+});

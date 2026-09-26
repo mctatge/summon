@@ -2,6 +2,10 @@ import {realpath,lstat,stat,mkdir,writeFile,chmod,readdir,unlink,readFile,rename
 import {randomUUID} from 'node:crypto';
 import path from 'node:path';
 import {sealedPath} from '../core/workstreams.mjs';
+import {WORK_CHECKPOINT_INSTRUCTIONS} from '../core/work-item-protocol.mjs';
+import {readClaudeModels} from './claude-models.mjs';
+import {selectClaudeModel} from './model-selection.mjs';
+import {classifyTask} from './task-routing.mjs';
 
 // Starts `claude` or `codex` in Terminal for a workspace, on a click and nothing else. Each launch writes one small
 // 0700 .command file under the data folder and opens it with `open -a Terminal`, the same shape as claude-login.
@@ -12,7 +16,9 @@ import {sealedPath} from '../core/workstreams.mjs';
 // explicit button, installClaudeHooks(), merges into settings.json after a byte-identical backup.
 
 const APPS=new Set(['claude','codex']);
-const HOOK_EVENTS=['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PermissionRequest','Notification','Stop','StopFailure','SessionEnd'];
+const MODEL_PREFERENCES=new Set(['auto','haiku','sonnet','opus']);
+const EFFORTS=new Set(['low','medium','high']);
+const HOOK_EVENTS=['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PermissionRequest','Notification','Stop','StopFailure','SubagentStart','SubagentStop','SessionEnd'];
 const NOTIFICATION_KINDS='permission_prompt|worker_permission_prompt|idle_prompt|agent_needs_input|elicitation_dialog|elicitation_url_dialog';
 const UNSET='unset ANTHROPIC_API_KEY OPENAI_API_KEY CODEX_API_KEY CLAUDECODE NODE_OPTIONS';
 const HEADER='#!/bin/zsh\n# Written by Summon for one launch; safe to delete.\nset -eu\n'+UNSET+'\n';
@@ -67,7 +73,7 @@ export function claudeHooksSettings(nodeBin,reporterPath){
 }
 const ownEntry=entry=>isObject(entry)&&Array.isArray(entry.hooks)&&entry.hooks.length>0&&entry.hooks.every(hook=>isObject(hook)&&typeof hook.command==='string'&&hook.command.includes('/summon-hook.mjs'));
 
-export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,run,executable,getProjects,agentSessions}){
+export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,run,executable,getProjects,agentSessions,benchmark,readModels=readClaudeModels}){
   const resource=name=>isPackaged?path.join(resourcesPath,name):path.join(root,'scripts',name);
   const reporterPath=()=>resource('summon-hook.mjs');
   const mcpServerPath=()=>resource('mcp-server.mjs');
@@ -104,9 +110,19 @@ export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,ru
     }
   }
 
-  async function launch({app,projectId}={}){
+  async function launch(options={}){
+    if(!isObject(options))throw new Error('Choose valid session options.');
+    const {app,projectId,task='',modelPreference='auto',effort}=options;
     if(!APPS.has(app))throw new Error('Choose Claude or Codex.');
     if(typeof projectId!=='string'||!projectId||projectId.length>200)throw new Error('Choose a workspace first.');
+    if(typeof task!=='string'||task.length>1000||CONTROL.test(task))throw new Error('Describe the task in at most 1,000 characters on one line.');
+    if(!MODEL_PREFERENCES.has(modelPreference))throw new Error('Choose Auto, Haiku, Sonnet or Opus.');
+    if(app==='codex'&&modelPreference!=='auto')throw new Error('Claude model choices cannot be used with Codex.');
+    if(effort!==undefined&&!EFFORTS.has(effort))throw new Error('Choose low, medium or high effort.');
+    const hasTask=Boolean(task.trim());
+    const profile=hasTask||effort!==undefined?classifyTask(task):null;
+    const selectedEffort=effort??(hasTask?profile.effort:undefined);
+    const routing=profile?{...profile,effort:selectedEffort,effortSource:effort===undefined?'task':'override'}:undefined;
     const projects=listOf(await getProjects());
     const project=projects.find(item=>isObject(item)&&item.id===projectId);
     if(!project||typeof project.path!=='string')throw new Error('Choose a workspace first.');
@@ -119,13 +135,25 @@ export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,ru
     const node=await executable('node').catch(()=>null);
     if(node!==null&&(CONTROL.test(node)||CONTROL.test(bin)||CONTROL.test(reporterPath())||CONTROL.test(mcpServerPath())||CONTROL.test(dataDir)))throw new Error('A program path cannot be used in a launch script.');
     const hooks=Boolean(node);
+    let modelSelection;
+    if(app==='claude'&&(benchmark||modelPreference!=='auto')){
+      try{
+        // An unavailable benchmark must not discard an explicit family choice from the live subscription catalog.
+        const [ranked,available]=await Promise.allSettled([Promise.resolve().then(()=>benchmark?.('combined')),Promise.resolve().then(()=>readModels({executable:bin,cwd:real}))]);
+        const catalog=available.status==='fulfilled'?available.value:null;
+        modelSelection=selectClaudeModel(ranked.status==='fulfilled'?ranked.value:null,{supportedModels:catalog?.status==='ok'?catalog.models:[],profile:hasTask?profile:null,effort:selectedEffort,modelPreference});
+        if(catalog?.status!=='ok')modelSelection={model:null,name:null,reason:'Claude could not report its available subscription models; using your CLI default.'};
+      }catch{modelSelection={model:null,name:null,reason:'Model rankings could not be checked; using your CLI default.'};}
+      // Only an exact CLI model identifier may become an argument; source prose never becomes shell syntax.
+      if(modelSelection.model&&!/^claude-[a-z0-9]+(?:-[a-z0-9]+)*(?:\[1m\])?$/.test(modelSelection.model))modelSelection={model:null,name:null,reason:'The model identifier could not be verified; using your CLI default.'};
+    }
     const tag=randomUUID();
     const sessionId=app==='claude'?tag:null;
     // The row for this session says "Started from Summon" once the ledger knows the tag; a ledger problem never stops the launch.
     try{await agentSessions?.noteLaunch?.({app,tag,cwd:real,projectId:project.id,sessionId});}catch{}
     await mkdir(dataDir,{recursive:true,mode:0o700});
     let mcp='none';
-    let exec;
+    let exec,defaultExec;
     if(app==='claude'){
       const args=[sh(bin),'--session-id',sh(tag)];
       if(hooks){
@@ -138,6 +166,13 @@ export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,ru
         args.push('--mcp-config',sh(mcpFile));
         mcp='attached';
       }
+      // Static workflow guidance augments Claude's existing prompt; it never submits the user's task.
+      // Keep it in the default backend branch too, and avoid advertising tools when no MCP is configured.
+      if(mcp!=='none')args.push('--append-system-prompt',sh(WORK_CHECKPOINT_INSTRUCTIONS));
+      if(effort!==undefined)args.push('--effort',sh(effort));
+      defaultExec=`exec ${args.join(' ')}`;
+      if(modelSelection?.model)args.push('--model',sh(modelSelection.model));
+      if(effort===undefined&&selectedEffort)args.push('--effort',sh(selectedEffort));
       exec=`exec ${args.join(' ')}`;
     }else{
       const args=[sh(bin),'-C',sh(real)];
@@ -147,9 +182,19 @@ export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,ru
         args.push('-c',sh(`mcp_servers.summon.command=${toml(node)}`),'-c',sh(`mcp_servers.summon.args=[${toml(mcpServerPath())}]`));
         mcp='attached';
       }
+      if(selectedEffort)args.push('-c',sh(`model_reasoning_effort=${toml(selectedEffort)}`));
       exec=`exec ${args.join(' ')}`;
     }
-    const script=`${HEADER}cd ${sh(real)}\n${exec}\n`;
+    const selectionNotice=modelSelection?`printf '%s\\n' ${sh(`Summon: ${String(modelSelection.reason).replace(/[\p{Cc}\p{Cf}]/gu,' ').slice(0,500)}`)}\n`:'';
+    // Only classifier labels reach the script; the user's task stays in memory and never becomes an initial prompt.
+    const routingNotice=routing?`printf '%s\\n' ${sh(`Summon: ${routing.kind} task, ${routing.complexity} complexity; ${routing.effort} effort${routing.effortSource==='override'?' (your override)':''}.`)}\n`:'';
+    // Terminal can inherit a backend override the scrubbed catalog probe deliberately did not use. Preserve it,
+    // but do not push a first-party benchmark choice into a gateway/Bedrock/Vertex/Foundry session.
+    const customBackend='${ANTHROPIC_BASE_URL:-}${ANTHROPIC_AUTH_TOKEN:-}${CLAUDE_CODE_USE_BEDROCK:-}${CLAUDE_CODE_USE_VERTEX:-}${CLAUDE_CODE_USE_FOUNDRY:-}';
+    const customNotice=effort===undefined?'Summon: Custom Claude backend detected; using its configured default.':`Summon: Custom Claude backend detected; using its configured default model with ${effort} effort.`;
+    const needsBackendGuard=app==='claude'&&(modelSelection?.model||(effort===undefined&&selectedEffort));
+    const launchLines=needsBackendGuard?`if [[ -n "${customBackend}" ]]; then\n  printf '%s\\n' ${sh(customNotice)}\n  ${defaultExec}\nelse\n  ${selectionNotice}${routingNotice}  ${exec}\nfi\n`:`${selectionNotice}${routingNotice}${exec}\n`;
+    const script=`${HEADER}cd ${sh(real)}\n${launchLines}`;
     await mkdir(launchDir,{recursive:true,mode:0o700});
     await chmod(launchDir,0o700);
     // Terminal titles the window after the file, so the workspace name goes in it (ASCII only; an em dash becomes a dash).
@@ -158,7 +203,7 @@ export function createLauncher({dataDir,homeDir,root,resourcesPath,isPackaged,ru
     await writePrivate(file,script,0o700);
     await prune();
     await run('/usr/bin/open',['-a','Terminal',file]);
-    return {app,tag,sessionId,folder:real,hooks,mcp};
+    return {app,tag,sessionId,folder:real,hooks,mcp,...(modelSelection?{modelSelection}:{}),...(routing?{routing}:{})};
   }
 
   async function readSettings(){
