@@ -5,6 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { GIT_ENV, gitArgs, scanRepo, diffExcerpts, readUntrackedHead, sameChanges } from './git-scan.mjs';
 import { AREAS, READINESS, DEFAULT_PRIVATE_SEGMENTS, EXCERPT_SOURCE_WIDTH, classifyPath, classifyFile, excerptEligible, hidePrivateText, redact, sealedPath, buildGroupingRequest, validateGrouping, fallbackGrouping, stabilize } from './workstreams.mjs';
 import { createStanding } from './standing.mjs';
+import { askAtMostTwice } from './answer-retry.mjs';
 
 const VERSION = 1;
 const LIMITS = { stateBytes: 2097152, roots: 20, privateRepos: 200, privatePrefixes: 40, prefixChars: 200, groupings: 300, branchSummaries: 1000, workstreams: 100, scanConcurrency: 4, deadlineMs: 12000, jobConcurrency: 2, untrackedHeads: 20, excerptFiles: 250, branchesPerRequest: 25, viewBranches: 100, viewStashes: 20, errors: 12, mirrorCache: 500, landedCache: 500, landedSubjects: 5, landedScan: 51, landedChars: 80, landedBytes: 65536, landedTimeout: 4000 };
@@ -824,7 +825,7 @@ export async function createWorkInFlight({ dataDir, getProjects = async () => []
 
   async function groupTarget(activeJob, target, settings) {
     const { repo, place, branches, branchOnly } = target;
-    const privatePaths = privateFor(repo.path);
+    const privatePaths = privateFor(repo.path), privateKey = JSON.stringify(privatePaths);
     const files = branchOnly ? [] : placeFiles(place);
     const requestPlace = { ...place, files };
     const eligible = file => { try { return excerptEligible(file, classifyFile(file, { privatePaths })) === true; } catch { return false; } };
@@ -839,9 +840,13 @@ export async function createWorkInFlight({ dataDir, getProjects = async () => []
     }
     if (await skippedNow(target)) return;
     const request = buildGroupingRequest({ repoName: repo.name, place: requestPlace, branches, excerpts: excerptMap, untrackedHeads, privatePaths, defaultBranch: typeof target.raw.defaultBranch === 'string' ? target.raw.defaultBranch : null });
-    const answer = await group(activeJob.engine, { prompt: request.prompt, schema: request.schema, effort: settings.effort, claudeModel: settings.claudeModel });
-    if (!isObject(answer) || !isObject(answer.raw)) throw new Error('The model returned no grouping.');
-    const result = validateGrouping(answer.raw, request, requestPlace);
+    // A refused answer is asked for once more, only while the request may still be sent as built: Summon is not
+    // closing, grouping is still on with the same engine, and the folder and its private folders are unchanged.
+    const { answer, result } = await askAtMostTwice(async () => {
+      const answer = await group(activeJob.engine, { prompt: request.prompt, schema: request.schema, effort: settings.effort, claudeModel: settings.claudeModel });
+      if (!isObject(answer) || !isObject(answer.raw)) throw new Error('The model returned no grouping.');
+      return { answer, result: validateGrouping(answer.raw, request, requestPlace) };
+    }, { ready: async () => !closing && !settingsProblem && state.settings.engine === activeJob.engine && JSON.stringify(privateFor(repo.path)) === privateKey && !(await skippedNow(target)) });
     const at = iso(now());
     await enqueue(async () => {
       await readState();

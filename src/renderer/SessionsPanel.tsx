@@ -39,7 +39,7 @@ const GLOSSARY: [string, string][] = [
   ['Probably', 'The app does not say this directly, so Summon is guessing from the files it keeps on this Mac. Shown with a dotted mark.'],
   ['Quiet', 'Used recently, but not open or running. Show quiet lists these at the end.'],
   ['The line under a title', 'What the session is touching, since titles from these apps are often vague. A spark on that line means Work in flight already described this work and Summon is borrowing its words.'],
-  ['The name in front', 'The project and, where there is one, the folder or the piece of work the session is touching. A piece of work is named in the words Work in flight used, marked with a spark. Summon does not rename anything: the app\u2019s own title stays underneath in quotes.'],
+  ['The name in front', 'The project and, where there is one, the folder or the piece of work the session is touching. A piece of work is named in the words Work in flight used, marked with a spark. When context reasoning is available, the name follows recent conversation and work. The original app title stays underneath in quotes.'],
 ];
 // Only a reader that says 'user' is a claim about authorship, and Claude is the one reader that says it, so the
 // other branch means "nobody told Summon who wrote this", which is not the same as "the app wrote it".
@@ -351,19 +351,20 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
     // The name in front is an address. Without a project there is nothing to address, so the title leads as before,
     // and so does it when the address would only repeat the project: fifteen rows reading 'Harbor \u00b7 main folder'
     // tell two sessions apart no better than nothing, and the app's own title is what separates them.
-    const lead = session.project && (session.work?.workstream || kind || session.titleIsFallback) ? headlineOf(session) : null;
+    const lead = session.titleReasoning ? session.title : session.project && (session.work?.workstream || kind || session.titleIsFallback) ? headlineOf(session) : null;
     // A fallback title says nothing worth quoting, and a title the same as the name in front would only repeat it.
-    const quoted = lead && !session.titleIsFallback && session.title && session.title !== lead ? session.title : null;
+    const originalTitle = session.titleReasoning ? session.originalTitle : session.title;
+    const quoted = lead && !session.titleIsFallback && originalTitle && originalTitle !== lead ? originalTitle : null;
     const auto = machineWritten(session);
     const work = workWords(session, lead);
     // The words in front are Work in flight's, not Summon's, so the spark travels with them.
     const leadStream = words(session.work?.workstream);
-    const borrowedLead = Boolean(lead && leadStream && lead.includes(leadStream));
+    const borrowedLead = !session.titleReasoning && Boolean(lead && leadStream && lead.includes(leadStream));
     // The name in front already says the project, and for a folder session the folder too; the chip adds only what it left out.
     const spot = lead ? (kind && !lead.includes(kind) ? kind : null) : null;
-    const where = Boolean(quoted || spot || (!lead && (session.project || session.folder)) || session.branch || note || work || (terminal && session.folder) || session.startedFrom === 'summon');
+    const where = Boolean(session.titleReasoning || quoted || spot || (!lead && (session.project || session.folder)) || session.branch || note || work || (terminal && session.folder) || session.startedFrom === 'summon');
     // Narrow rows leave the worktree label and branch out, so the tooltip keeps them.
-    const tip = [lead, lead && session.title !== lead ? `“${session.title}”` : null, !lead ? session.title : null, session.project && `${session.project}${session.placeLabel && session.placeLabel !== 'Main folder' ? ` · ${session.placeLabel}` : ''}`, session.branch, session.folder, words(session.workText)].filter(Boolean).join('\n');
+    const tip = [session.titleReasoning && `Named from recent context: ${session.titleReasoning.summary}`, session.titleReasoning?.evidence.join('\n'), lead, lead && session.title !== lead ? `“${session.title}”` : null, !lead ? session.title : null, session.project && `${session.project}${session.placeLabel && session.placeLabel !== 'Main folder' ? ` · ${session.placeLabel}` : ''}`, session.branch, session.folder, words(session.workText)].filter(Boolean).join('\n');
     return <li key={session.key} className="as-item">
       <div className={`as-row ${session.group} ${session.unread ? 'unread' : ''} ${session.openable === 'none' ? 'inert' : ''}`}>
         {/* Every row in New replies is unread, so the dot only says something outside that group. */}
@@ -372,7 +373,7 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
         <div className="as-main">
           <div className="as-line">
             <button type="button" id={`${id}-title`} className={`as-open ${!lead && session.titleIsFallback ? 'fallback' : ''}`} title={tip} aria-disabled={session.openable === 'none' || undefined} aria-describedby={`${where ? `${id}-where ` : ''}${id}-state ${id}-hint`} onClick={() => void openSession(session)}>
-              {borrowedLead && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">in the words Work in flight used, </span></>}{lead || session.title}
+              {session.titleReasoning && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">named from recent context, </span></>}{borrowedLead && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">in the words Work in flight used, </span></>}{lead || session.title}
               <span className="sr-only">{`, ${session.appLabel}${session.unread && session.group !== 'new' ? ', new reply' : ''}${session.pinned ? ', pinned' : ''}, ${glyphWord[glyph.split(' ')[0]] || session.group}`}</span>
             </button>
             {session.pinned && <Pin size={11} className="as-pin" aria-hidden="true" />}
@@ -382,11 +383,12 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
             {/* The title belongs to the session's own app, so it is quoted rather than spoken as Summon's own words.
                 Only Claude says who wrote one, so the brighter variant means "you named this", not "the app did not". */}
             {quoted && <span className={`as-title-quote ${auto ? 'auto' : 'own'}`} title={auto ? APP_TIP : OWN_TIP}><span className="sr-only">{auto ? 'titled ' : 'you named it '}</span>“{quoted}”</span>}
-            {lead
+            {lead && !session.titleReasoning
               ? spot && <span className="as-chip as-place"><FolderGit2 size={11} aria-hidden="true" /><span className="as-chip-text">{spot}</span></span>
               : session.project
                 ? <span className="as-chip as-project"><FolderGit2 size={11} aria-hidden="true" /><span className="as-chip-text">{session.project}{kind && <span className="as-chip-soft"> · {kind}</span>}</span></span>
                 : session.folder && !terminal && <span className="as-chip as-folder"><Folder size={11} aria-hidden="true" /><span className="as-chip-text">{session.folder}</span></span>}
+            {session.titleReasoning && <span className="as-chip" title={`${session.titleReasoning.summary}\n${session.titleReasoning.evidence.join('\n')}`}><Sparkles size={11} aria-hidden="true" /><span className="as-chip-text">From recent context</span></span>}
             {session.branch && <span className="as-chip as-branch"><GitBranch size={11} aria-hidden="true" /><span className="sr-only">branch </span><span className="as-chip-text">{session.branch}</span></span>}
             {/* Summon's own fact, not the app's: this session was started with the button in the workbench. */}
             {session.startedFrom === 'summon' && <span className="as-chip as-origin" title="Started with the Start button in Summon"><Bot size={11} aria-hidden="true" /><span className="as-chip-text">Started from Summon</span></span>}

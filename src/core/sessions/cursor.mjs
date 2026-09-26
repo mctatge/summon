@@ -1,9 +1,10 @@
 /** Cursor agent sessions: read-only metadata from Cursor's global state.vscdb (APFS clone only, never the original, never a full copy).
- * Reads only header flags, names, times, folders and run status. Never reads text, richText, conversation*, subtitle or bubbles. */
+ * Reads only header flags, names, times, folders and run status. Recent evidence reads at most twelve text bubbles for forty visible sessions; never richText, thinking or tool payloads. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { sealedPath } from '../workstreams.mjs';
+import { recentContext } from './recent-context.mjs';
 
 const LABEL = 'Cursor';
 const DB_PARTS = ['Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb'];
@@ -180,10 +181,32 @@ export function cursorSessionsFrom(result, { now, recentMs, processes, limits = 
       helpers: state.activity === 'working' ? helpers.get(id) || 0 : 0,
       model: clean(detail?.model, 80) || null,
       work: workOf(row),
+      ...(result.contexts?.[id] ? { recentContext: result.contexts[id] } : {}),
     });
     if (sessions.length >= limits.sessions) break;
   }
   return sessions;
+}
+
+// Only the visible, non-sealed session ids reach this query. Indexed bubble keys and fixed offsets bound the output.
+async function readRecentContexts(snapshots, dbPath, sessions) {
+  const ids = sessions.slice(0, 40).map(item => item.id);
+  if (!ids.length) return {};
+  const bubble = field => guard('b.value', `json_extract(b.value, '$.${field}')`);
+  const result = await snapshots.query(dbPath, [{ name: 'messages', sql: `WITH offsets(n) AS (VALUES ${Array.from({ length: 12 }, (_, i) => `(${i + 1})`).join(',')}),
+recent AS (SELECT t.value AS id, o.n, ${guard('k.value', "json_extract(k.value, '$.fullConversationHeadersOnly[#-' || o.n || '].bubbleId')")} AS bubbleId
+ FROM json_each(?) t JOIN cursorDiskKV k ON k.key = 'composerData:' || t.value CROSS JOIN offsets o)
+SELECT r.id, CASE ${bubble('type')} WHEN 1 THEN 'user' WHEN 2 THEN 'assistant' END AS role,
+ substr(${bubble('text')}, 1, 4000) AS text, ${bubble('createdAt')} AS at
+FROM recent r JOIN cursorDiskKV b ON b.key = 'bubbleId:' || r.id || ':' || r.bubbleId
+WHERE ${bubble('type')} IN (1, 2) ORDER BY r.id, r.n DESC LIMIT 480`, params: [JSON.stringify(ids)] }], { maxFullCopyBytes: 0 });
+  const grouped = new Map();
+  for (const item of result.messages ?? []) {
+    if (!ids.includes(item.id)) continue;
+    if (!grouped.has(item.id)) grouped.set(item.id, []);
+    grouped.get(item.id).push(item);
+  }
+  return Object.fromEntries([...grouped].map(([id, messages]) => [id, recentContext(messages)]));
 }
 
 function source({ available, running, known = true, detail = null }) {
@@ -220,6 +243,9 @@ export function createCursorReader(deps = {}) {
           if (!snapshots) { snapshots = await defaultSnapshots(o.run); owned = true; }
           const statements = cursorStatements({ since: now - recentMs, hotSince: now - limits.hotMs, helperSince: now - limits.helperMs, limits });
           const result = await snapshots.query(dbPath, statements, { maxFullCopyBytes: 0 });
+          const visible = cursorSessionsFrom(result, { now, recentMs, processes, limits });
+          try { result.contexts = await readRecentContexts(snapshots, dbPath, visible); }
+          catch { result.contexts = {}; /* An unfamiliar bubble layout cannot hide the session list. */ }
           cache = { sig, at: now, result };
         } catch (error) {
           cache = null;

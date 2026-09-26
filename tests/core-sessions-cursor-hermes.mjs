@@ -131,6 +131,7 @@ async function cursorFixture(t, { skip = [] } = {}) {
   db.close();
   return { home, dir, dbPath, ids };
 }
+const metadataCalls = snapshots => snapshots.calls.filter(call => !call.statements.some(item => ['messages', 'contexts'].includes(item.name)));
 const byId = sessions => new Map(sessions.map(session => [session.id, session]));
 const cursorRunning = (startedAt = NOW - 5 * 60 * MIN) => procs({ pid: 4100, startedAt, comm: CURSOR_BIN }, { pid: 829, startedAt: NOW - DAY, comm: '/System/Library/PrivateFrameworks/TextInputUIMacHelper.framework/Versions/A/XPCServices/CursorUIViewService.xpc/Contents/MacOS/CursorUIViewService' });
 
@@ -141,7 +142,7 @@ test('Cursor: states, titles, folders and filters from composer headers', async 
   const result = await readCursorSessions({ homeDir: home, now: NOW, processes: cursorRunning(), snapshots });
   assert.deepEqual(result.warnings, []);
   assert.deepEqual(result.sources, [{ app: 'cursor', label: 'Cursor', available: true, running: true, detail: null }]);
-  assert.equal(snapshots.calls.length, 1);
+  assert.equal(metadataCalls(snapshots).length, 1);
   assert.equal(snapshots.calls[0].dbPath, dbPath);
   assert.equal(snapshots.calls[0].options.maxFullCopyBytes, 0, 'Cursor is never full-copied.');
   const s = byId(result.sessions);
@@ -238,7 +239,7 @@ test('Cursor reader is change-gated on the database files; process changes still
   const first = await reader.read({ now: NOW, processes: new Map() });
   assert.equal(byId(first.sessions).get(ids.generating).activity, 'interrupted');
   const second = await reader.read({ now: NOW + 1000, processes: cursorRunning() });
-  assert.equal(snapshots.calls.length, 1, 'Unchanged files are not snapshotted again.');
+  assert.equal(metadataCalls(snapshots).length, 1, 'Unchanged files are not snapshotted again.');
   assert.equal(byId(second.sessions).get(ids.generating).activity, 'working');
   assert.equal(second.sources[0].running, true);
 
@@ -246,13 +247,13 @@ test('Cursor reader is change-gated on the database files; process changes still
   db.prepare('UPDATE composerHeaders SET value = json_set(value, \'$.hasUnreadMessages\', json(\'true\')) WHERE composerId = ?').run(ids.worktree);
   db.close();
   const third = await reader.read({ now: NOW + 2000, processes: cursorRunning() });
-  assert.equal(snapshots.calls.length, 2);
+  assert.equal(metadataCalls(snapshots).length, 2);
   assert.equal(byId(third.sessions).get(ids.worktree).unread, true);
 
   await reader.read({ now: NOW + 2000 + 6 * MIN, processes: cursorRunning() });
-  assert.equal(snapshots.calls.length, 3, 'The cache expires after a few minutes as a safety net.');
+  assert.equal(metadataCalls(snapshots).length, 3, 'The cache expires after a few minutes as a safety net.');
   await reader.read({ now: NOW + 2000 + 6 * MIN, processes: cursorRunning(), recentMs: DAY });
-  assert.equal(snapshots.calls.length, 4, 'A different window re-queries.');
+  assert.equal(metadataCalls(snapshots).length, 4, 'A different window re-queries.');
 });
 
 test('Cursor: a plan waiting for review never ages out of the list', async t => {
@@ -350,7 +351,7 @@ async function hermesFixture(t, { legacy = false } = {}) {
   add(ids.archivedOpen, { title: 'Archived but open', archived: 1 });
   add(ids.markedUnread, { title: 'Marked unread', lastRead: 0, modelConfig: 'not json' });
   add('not-a-hermes-id', { title: 'Bad id' });
-  db.prepare('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)').run(ids.tip, 'user', SECRET, sec(NOW));
+  db.prepare('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)').run(ids.tip, 'system', SECRET, sec(NOW));
   const lease = db.prepare('INSERT INTO session_turn_leases VALUES (?, ?, ?, ?)');
   lease.run(ids.root, 'host=mac:pid=500:thread=1', sec(NOW - 4 * MIN), sec(NOW + 4 * MIN));
   lease.run(ids.forkParent, 'pid=500', sec(NOW - 4 * MIN), sec(NOW + 4 * MIN));
@@ -457,12 +458,12 @@ test('Hermes: closed app, cache gating and the open-chat file', async t => {
   assert.ok(closed.sessions.every(session => !session.live));
 
   const appOnly = await reader.read({ now: NOW + 1000, processes: procs({ pid: 22, startedAt: NOW - MIN, comm: HERMES_BIN }) });
-  assert.equal(snapshots.calls.length, 1, 'Unchanged files are not snapshotted again.');
+  assert.equal(metadataCalls(snapshots).length, 1, 'Unchanged files are not snapshotted again.');
   assert.equal(appOnly.sources[0].running, true);
 
   await fs.writeFile(path.join(dir, 'runtime', 'active_sessions.json'), JSON.stringify({ entries: [] }));
   const after = await reader.read({ now: NOW + 2000, processes: hermesProcs() });
-  assert.equal(snapshots.calls.length, 2, 'A changed open-chat file re-queries.');
+  assert.equal(metadataCalls(snapshots).length, 2, 'A changed open-chat file re-queries.');
   assert.equal(byId(after.sessions).get(ids.open).activity, 'quiet');
   assert.equal(byId(after.sessions).get(ids.tip).activity, 'working');
 
@@ -498,7 +499,7 @@ test('Hermes: an older schema falls back to the columns it has', async t => {
   const reader = createHermesReader({ homeDir: home, snapshots });
   const result = await reader.read({ now: NOW, processes: new Map() });
   assert.deepEqual(result.warnings, ['Some Hermes details are missing in this Hermes version.']);
-  assert.deepEqual(snapshots.calls.map(call => call.names), [['sessions', 'leases', 'heartbeats'], ['tables'], ['sessions', 'tables']]);
+  assert.deepEqual(metadataCalls(snapshots).map(call => call.names), [['sessions', 'leases', 'heartbeats'], ['tables'], ['sessions', 'tables']]);
   const s = byId(result.sessions);
   assert.deepEqual([...s.keys()].sort(), [ids.tip, ids.cli].sort());
   assert.equal(s.get(ids.tip).title, 'Root title');
@@ -507,7 +508,7 @@ test('Hermes: an older schema falls back to the columns it has', async t => {
   assert.equal(s.get(ids.cli).updatedAt, NOW - 60 * MIN);
   assert.ok(!JSON.stringify(result).includes(SECRET));
   const cached = await reader.read({ now: NOW + 1000, processes: new Map() });
-  assert.equal(snapshots.calls.length, 3);
+  assert.equal(metadataCalls(snapshots).length, 3);
   assert.deepEqual(cached.warnings, ['Some Hermes details are missing in this Hermes version.']);
 
   // Hermes upgrades in place: the next changed read notices the full schema, and the one after uses the full query.
@@ -520,7 +521,7 @@ test('Hermes: an older schema falls back to the columns it has', async t => {
   assert.deepEqual(noticed.warnings, ['Some Hermes details are missing in this Hermes version.']);
   const upgraded = await reader.read({ now: NOW + 3000, processes: hermesProcs() });
   assert.deepEqual(upgraded.warnings, []);
-  assert.deepEqual(snapshots.calls.slice(3).map(call => call.names), [['sessions', 'tables'], ['sessions', 'leases', 'heartbeats']]);
+  assert.deepEqual(metadataCalls(snapshots).slice(3).map(call => call.names), [['sessions', 'tables'], ['sessions', 'leases', 'heartbeats']]);
   assert.equal(byId(upgraded.sessions).get(ids.tip).activity, 'working');
 });
 
@@ -568,4 +569,49 @@ test('Both readers work through the real snapshot service (clone only, temp fold
   assert.ok(!JSON.stringify([c, h, l]).includes(SECRET));
   assert.deepEqual(await listing(cursor.dir), cursorBefore);
   assert.deepEqual(await listing(tmpRoot), [], 'Snapshot folders are removed.');
+});
+
+test('Cursor recent context follows bounded later bubbles, excluding drafts and tool payloads', async t => {
+  const { home, dbPath, ids } = await cursorFixture(t);
+  const db = new DatabaseSync(dbPath);
+  const headers = Array.from({ length: 15 }, (_, i) => ({ bubbleId: `recent-${i}`, type: i % 2 ? 2 : 1 }));
+  db.prepare('INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?, ?)').run(`composerData:${ids.generating}`, JSON.stringify(composerData(ids.generating, { fullConversationHeadersOnly: headers })));
+  const insert = db.prepare('INSERT OR REPLACE INTO cursorDiskKV (key, value) VALUES (?, ?)');
+  for (let i = 0; i < headers.length; i++) insert.run(`bubbleId:${ids.generating}:recent-${i}`, JSON.stringify({ type: headers[i].type, text: `Current goal ${i}`, createdAt: NOW - 1000 + i, thinking: SECRET, toolFormerData: { output: SECRET } }));
+  db.close();
+  const snapshots = fakeSnapshots();
+  const reader = createCursorReader({ homeDir: home, snapshots });
+  const result = await reader.read({ now: NOW, processes: cursorRunning() });
+  const context = byId(result.sessions).get(ids.generating).recentContext;
+  assert.ok(context, 'known bubble layout supplies recent conversation');
+  assert.equal(context.messages.length, 6);
+  assert.equal(context.messages[0].text, 'Current goal 9');
+  assert.equal(context.messages.at(-1).text, 'Current goal 14');
+  assert.equal(context.updatedAt, NOW - 986);
+  assert.doesNotMatch(JSON.stringify(context), /SECRET/);
+  const query = snapshots.calls.find(call => call.names.includes('messages'));
+  assert.ok(!query.statements[0].params[0].includes(ids.sealed), 'sealed sessions never enter the text query');
+  await reader.read({ now: NOW + 100, processes: cursorRunning() });
+  assert.equal(snapshots.calls.length, 2, 'unchanged evidence is cached alongside metadata');
+});
+
+test('Hermes recent context spans compressed continuations and follows later messages', async t => {
+  const { home, dbPath, ids } = await hermesFixture(t);
+  const db = new DatabaseSync(dbPath);
+  const insert = db.prepare('INSERT INTO messages (session_id, role, content, timestamp) VALUES (?, ?, ?, ?)');
+  insert.run(ids.root, 'user', 'Old request', sec(NOW - 3 * 60 * MIN));
+  for (let i = 0; i < 10; i++) insert.run(i < 6 ? ids.root : ids.tip, i % 2 ? 'assistant' : 'user', `Evolving goal ${i}`, sec(NOW - 1000 + i));
+  insert.run(ids.tip, 'tool', SECRET, sec(NOW));
+  insert.run(ids.tip, 'assistant', JSON.stringify([{ type: 'thinking', thinking: SECRET }, { type: 'text', text: 'Finish the current goal' }]), sec(NOW));
+  db.close();
+  const snapshots = fakeSnapshots();
+  const result = await readHermesSessions({ homeDir: home, now: NOW, processes: hermesProcs(), snapshots });
+  const context = byId(result.sessions).get(ids.tip).recentContext;
+  assert.equal(context.messages.length, 6);
+  assert.equal(context.messages[0].text, 'Evolving goal 5', 'recent root messages survive a compression continuation');
+  assert.equal(context.messages.at(-1).text, 'Finish the current goal');
+  assert.equal(context.updatedAt, NOW);
+  assert.doesNotMatch(JSON.stringify(context), /SECRET|Old request/);
+  const query = snapshots.calls.find(call => call.names.includes('contexts'));
+  assert.ok(!query.statements[0].params[0].includes(ids.sealed), 'sealed sessions never enter the text query');
 });

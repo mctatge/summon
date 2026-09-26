@@ -3,7 +3,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 
-const LIMITS = { memories: 500, routines: 100, sources: 200, directories: 300, entries: 3000, noteBytes: 65536, searchBytes: 1048576, stateBytes: 2097152 };
+const LIMITS = { memories: 500, routines: 100, sources: 200, directories: 300, entries: 3000, noteBytes: 65536, projectNoteBytes: 262144, projectPassageChars: 900, searchBytes: 1048576, stateBytes: 2097152 };
 const ACTIONS = new Set(['calendar', 'benchmark-open', 'benchmark', 'project', 'context', 'files', 'pause', 'resume']);
 const iso = () => new Date().toISOString();
 const clone = value => structuredClone(value);
@@ -164,7 +164,7 @@ export async function createKnowledge({ dataDir, projects = [], validateCommand,
     if (pending.length || entryCount >= LIMITS.entries || candidates.size >= LIMITS.sources) problem('Source discovery reached its local safety limit; narrow the configured vault or use explicit note paths.');
     health.lastRefreshAt = iso();
   }
-  async function noteText(source, remaining) {
+  async function noteText(source, remaining, maxBytes = LIMITS.noteBytes) {
     const note = await safeNote(source.path, state.config.vaultPath);
     if (!note) return null;
     let handle;
@@ -172,9 +172,9 @@ export async function createKnowledge({ dataDir, projects = [], validateCommand,
       handle = await fs.open(source.path, constants.O_RDONLY | constants.O_NOFOLLOW);
       const stat = await handle.stat({ bigint: true });
       if (!stat.isFile() || stat.dev !== note.stat.dev || stat.ino !== note.stat.ino || await fs.realpath(source.path) !== source.path) return null;
-      const buffer = Buffer.alloc(Math.min(LIMITS.noteBytes, remaining, Number(stat.size)));
+      const buffer = Buffer.alloc(Math.min(maxBytes, remaining, Number(stat.size)));
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-      return { source: note.source, text: buffer.subarray(0, bytesRead).toString('utf8'), bytes: bytesRead };
+      return { source: note.source, text: buffer.subarray(0, bytesRead).toString('utf8'), bytes: bytesRead, truncated: bytesRead < Number(stat.size) };
     } catch (error) { problem(`Cannot read configured source ${source.path}: ${error.code || error.message}`); return null; }
     finally { if (handle) await handle.close(); }
   }
@@ -201,7 +201,96 @@ export async function createKnowledge({ dataDir, projects = [], validateCommand,
     // Include a little preceding paragraph context only when it fits without
     // pushing the selected matching line outside the excerpt's size limit.
     while (start > firstContent && start > best - 2 && lines[start - 1].trim() && !heading(start - 1) && lines.slice(start - 1, best + 1).join('\n').length <= 700) start--;
-    return { text: lines.slice(start, Math.min(lines.length, best + 3)).join('\n').trim().slice(0, 700), line: start + 1 };
+    const selected = lines.slice(start, Math.min(lines.length, best + 3)).join('\n').trim();
+    // A hub can keep a whole dated entry on one very long line. Center the
+    // bounded excerpt on its matching words instead of losing them at char 700.
+    const lower = selected.toLocaleLowerCase();
+    const hits = terms.flatMap(term => [...lower.matchAll(new RegExp(term, 'gu'))].map(match => match.index));
+    const anchor = hits.sort((a, b) => scoreText(selected.slice(b, b + 600), terms) - scoreText(selected.slice(a, a + 600), terms) || a - b)[0] ?? 0;
+    const offset = selected.length <= 700 ? 0 : Math.max(0, anchor - 100);
+    return { text: selected.slice(offset, offset + 700), line: start + 1 + (selected.slice(0, offset).match(/\n/g) || []).length };
+  }
+  function pendingRank(text) {
+    // Ranking is evidence selection only. Keep the author's literal status and
+    // let the reasoning layer weigh newer contradictory evidence.
+    if (/\b(?:not (?:yet )?sent|unsent|still owe|yet to (?:send|follow|contact)|proposed[,; —-]+not sent)\b/i.test(text)) return 12;
+    if (/^\s*[-*+]\s+\[ \]/m.test(text) || /\b(?:next action|next step|to[- ]do|remains? open)\b/i.test(text)) return 7;
+    if (/\b(?:awaiting|waiting (?:on|for)|pending|not (?:yet )?(?:done|completed?|resolved))\b/i.test(text)) return 4;
+    return 0;
+  }
+  function passageChunks(text, line) {
+    const chunks = [];
+    let offset = 0;
+    while (offset < text.length) {
+      let end = Math.min(text.length, offset + LIMITS.projectPassageChars);
+      if (end < text.length) {
+        const candidate = text.slice(offset, end);
+        // Prefer a sentence boundary, then whitespace, without dropping text.
+        const sentences = [...candidate.matchAll(/[.!?](?:["')*]*)\s+/g)];
+        const sentence = sentences.at(-1);
+        const boundary = sentence && sentence.index > 400 ? sentence.index + sentence[0].length : candidate.lastIndexOf(' ');
+        if (boundary > 400) end = offset + boundary;
+      }
+      const literal = text.slice(offset, end);
+      const leading = literal.length - literal.trimStart().length;
+      const content = literal.trim();
+      if (content.length >= 30 && /[\p{L}]/u.test(content)) chunks.push({ text: content, line: line + (text.slice(0, offset + leading).match(/\n/g) || []).length, offset, pending: pendingRank(content) });
+      offset = end;
+    }
+    return chunks;
+  }
+  function projectPassages(note) {
+    const lines = note.text.split(/\r?\n/);
+    // Do not infer a status from the unfinished last line of a capped read.
+    if (note.truncated) lines.pop();
+    const passages = [];
+    const headings = [];
+    let frontmatter = lines[0]?.trim() === '---';
+    let fence = null; let comment = false; let block = []; let first = 0;
+    const flush = () => {
+      if (!block.length) return;
+      const text = block.join('\n');
+      const ownDate = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/)?.[1];
+      const datedHeading = headings.findLast(heading => /\b20\d{2}-\d{2}-\d{2}\b/.test(heading.text));
+      const writtenDate = ownDate || datedHeading?.text.match(/\b(20\d{2}-\d{2}-\d{2})\b/)?.[1] || '';
+      const label = datedHeading ? `${note.source.title} · ${datedHeading.text}` : note.source.title;
+      const routine = /\b(?:housekeeping|backfill|repo audit|disk triage|daily catch-up|application\/add-in monitoring|scraper work published)\b/i.test(text.slice(0, 260));
+      for (const chunk of passageChunks(text, first + 1)) {
+        passages.push({ ...chunk, date: date(writtenDate) ? writtenDate : '', routine, group: `${note.source.id}:${first}`, result: {
+          id: `${note.source.id}:${first + 1}:${chunk.offset}`, kind: 'project-note', text: chunk.text, projectId: note.source.projectId,
+          source: { label: ownDate && chunk.offset > 0 ? `${label} · ${ownDate}` : label, path: note.source.path, line: chunk.line, modifiedAt: note.source.modifiedAt },
+        } });
+      }
+      block = [];
+    };
+    for (let index = 0; index < lines.length; index++) {
+      const line = lines[index];
+      if (frontmatter) { if (index > 0 && line.trim() === '---') frontmatter = false; continue; }
+      const marker = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+      if (marker) {
+        flush();
+        if (!fence) fence = marker[1];
+        else if (marker[1][0] === fence[0] && marker[1].length >= fence.length) fence = null;
+        continue;
+      }
+      if (fence) continue;
+      if (comment || line.includes('<!--')) { flush(); comment = !line.includes('-->'); continue; }
+      const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$/);
+      if (heading) {
+        flush();
+        while (headings.length && headings.at(-1).depth >= heading[1].length) headings.pop();
+        headings.push({ depth: heading[1].length, text: heading[2] });
+        continue;
+      }
+      // Curated documents are still untrusted data, not operating instructions.
+      const boilerplate = headings.some(heading => /\b(?:instructions|universal rules|maintenance|where things live|note conventions)\b/i.test(heading.text));
+      if (!line.trim() || /^(?: {4}|\t)/.test(line) || /^\s*[-*_]{3,}\s*$/.test(line) || boilerplate) { flush(); continue; }
+      if (/^\s*[-*+]\s/.test(line) && block.length) flush();
+      if (!block.length) first = index;
+      block.push(line);
+    }
+    flush();
+    return passages;
   }
   function routineForTrigger(trigger, projectId = null) {
     if (typeof trigger !== 'string' || trigger.length > 160) return null;
@@ -254,6 +343,53 @@ export async function createKnowledge({ dataDir, projects = [], validateCommand,
         }
       });
       await refreshIndex(); notify(); return snapshot();
+    }),
+    projectContext: (projectId, { limit = 8 } = {}) => enqueue(async () => {
+      await readState();
+      checkedProject(projectId);
+      if (!Number.isInteger(limit) || limit < 1 || limit > 8) throw new Error('Choose a project context limit between 1 and 8.');
+      if (!projectId) return [];
+      const candidates = [];
+      for (const memory of state.memories.filter(memory => memory.projectId === projectId)) {
+        const chunks = passageChunks(memory.text, 1);
+        const chunk = chunks.sort((a, b) => b.pending - a.pending || a.offset - b.offset)[0];
+        const text = chunk?.text || memory.text.slice(0, LIMITS.projectPassageChars);
+        candidates.push({ pending: pendingRank(text), date: memory.updatedAt.slice(0, 10), group: memory.id, explicit: true, result: {
+          id: memory.id, kind: 'explicit', text, projectId, source: { label: memory.source, modifiedAt: memory.updatedAt },
+        } });
+      }
+      await refreshIndex();
+      let remaining = LIMITS.searchBytes;
+      // The broad search API intentionally permits unscoped Home/global facts.
+      // Goal inference must use only sources mapped to this exact workspace.
+      for (const source of sources.filter(source => source.projectId === projectId).sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt) || a.path.localeCompare(b.path))) {
+        if (remaining <= 0) break;
+        const note = await noteText(source, remaining, LIMITS.projectNoteBytes);
+        if (!note) continue;
+        remaining -= note.bytes;
+        if (note.source.projectId === projectId) candidates.push(...projectPassages(note));
+      }
+      const activityDate = candidate => (Date.parse(candidate.date) || 0) - (candidate.routine ? 14 * 86400000 : 0);
+      let topics = [];
+      const related = candidate => scoreText(candidate.result.text, topics) + (candidate.offset === 0 ? 4 : 0);
+      const recent = (a, b) => activityDate(b) - activityDate(a) || related(b) - related(a) || Number(Boolean(b.explicit)) - Number(Boolean(a.explicit)) || (a.line ?? 0) - (b.line ?? 0) || (a.offset ?? 0) - (b.offset ?? 0);
+      const selected = []; const groups = new Set();
+      const add = candidate => {
+        if (!groups.has(candidate.group) && selected.length < limit) { selected.push(candidate); groups.add(candidate.group); }
+      };
+      // Reserve room both for older unsent commitments and newer progress.
+      const pendingBudget = Math.min(2, Math.ceil(limit / 3));
+      for (const candidate of candidates.filter(candidate => candidate.pending >= 4).sort((a, b) => b.pending - a.pending || b.date.localeCompare(a.date) || recent(a, b))) {
+        if (selected.length >= pendingBudget) break;
+        add(candidate);
+      }
+      // Within equally recent entries, prefer progress related to the open
+      // commitments. Routine monitoring remains eligible but does not crowd out
+      // the product work that a pending update would actually discuss.
+      const generic = new Set(['drafted', 'instead', 'formal', 'notes', 'which', 'their', 'using', 'source', 'status', 'project', 'proposed', 'since', 'would', 'could', 'should']);
+      topics = [...new Set([...selected].sort((a, b) => a.result.text.length - b.result.text.length).flatMap(candidate => candidate.result.text.toLocaleLowerCase().match(/[\p{L}]{5,}/gu) || []).filter(term => !stopwords.has(term) && !generic.has(term)))].slice(0, 60);
+      for (const candidate of candidates.sort(recent)) add(candidate);
+      return selected.map(candidate => candidate.result);
     }),
     search: (query, { projectId = null, limit = 8 } = {}) => enqueue(async () => {
       await readState();

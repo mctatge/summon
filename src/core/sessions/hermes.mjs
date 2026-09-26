@@ -1,9 +1,10 @@
 /** Hermes sessions: read-only metadata from ~/.hermes/state.db (snapshot clone only) and ~/.hermes/runtime/active_sessions.json.
- * Never reads messages, system_prompt, last_activity_description or any other conversation text. Never talks to the Hermes backend. */
+ * Reads bounded recent user/assistant excerpts for visible sessions; never system_prompt, last_activity_description, thinking or tool payloads. Never talks to the Hermes backend. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { sealedPath } from '../workstreams.mjs';
+import { recentContext } from './recent-context.mjs';
 
 const LABEL = 'Hermes';
 const SESSION_ID = /^\d{8}_\d{6}_[0-9a-f]{6}$/;
@@ -212,6 +213,7 @@ export function hermesSessionsFrom(result, { now, recentMs, processes, active = 
       activity, activitySince, reason,
       unread, archived, pinned: flag(row.pinned), live,
       confidence, helpers: 0, model: clean(row.model, 80) || null,
+      ...(result.contexts?.[id] ? { recentContext: result.contexts[id] } : {}),
     });
     if (sessions.length >= limits.sessions) break;
   }
@@ -233,6 +235,32 @@ async function readActive(file, limits) {
     if (error?.code === 'ENOENT') return { json: null, warning: null };
     return { json: null, warning: "Hermes's open-chat list could not be read." };
   } finally { await handle?.close().catch(() => {}); }
+}
+
+async function readRecentContexts(snapshots, dbPath, sessions, rows) {
+  const visible = new Set(sessions.slice(0, 40).map(item => item.id));
+  const targets = rows.filter(item => visible.has(item.id)).map(item => ({ id: item.id,
+    chain: String(item.chain_ids ?? item.id).split(',').filter(id => SESSION_ID.test(id)).slice(0, 50) }));
+  if (!targets.length) return {};
+  // Each chain is queried newest-first with a hard row and character cap. Compacted continuations retain recent parent turns.
+  const result = await snapshots.query(dbPath, [{ name: 'contexts', sql: `SELECT json_extract(t.value, '$.id') AS id,
+ (SELECT json_group_array(json_object('role', role, 'text', text, 'at', at)) FROM
+   (SELECT role, substr(content, 1, 4000) AS text, timestamp * 1000 AS at FROM messages
+    WHERE session_id IN (SELECT value FROM json_each(t.value, '$.chain')) AND role IN ('user', 'assistant')
+    ORDER BY timestamp DESC, id DESC LIMIT 12)) AS messages
+FROM json_each(?) t LIMIT 40`, params: [JSON.stringify(targets)] }]);
+  const contexts = {};
+  for (const item of result.contexts ?? []) {
+    if (!visible.has(item.id)) continue;
+    let messages;
+    try { messages = JSON.parse(item.messages).reverse(); } catch { continue; }
+    for (const message of messages) {
+      // Some Hermes versions store text blocks as JSON, others use a plain string.
+      if (/^\s*\[/.test(message.text)) { try { message.content = JSON.parse(message.text); delete message.text; } catch { message.text = null; } }
+    }
+    contexts[item.id] = recentContext(messages);
+  }
+  return contexts;
 }
 
 function source({ available, running, known = true, detail = null }) {
@@ -298,6 +326,10 @@ export function createHermesReader(deps = {}) {
             if (next.complete) { schema = null; stale = true; }
             else if (next.key !== schema.key) { schema = next; stale = true; }
           }
+          const active = liveActiveSessions(json, processes, limits);
+          const visible = hermesSessionsFrom(result, { now, recentMs, processes, active, limits }).sessions;
+          try { result.contexts = await readRecentContexts(snapshots, dbPath, visible, result.sessions ?? []); }
+          catch { result.contexts = {}; /* Older message layouts still provide the normal session list. */ }
           cache = { sig, at: now, result, json, stale, warnings: [...warnings] };
         } catch (error) {
           cache = null;

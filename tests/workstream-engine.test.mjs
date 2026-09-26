@@ -46,6 +46,8 @@ test('grouping arguments reject unknown engines, efforts and models',()=>{
   assert.throws(()=>groupingArgs('codex',{schemaPath:'/s.json',effort:'max"; rm'}),/effort/);
   assert.throws(()=>groupingArgs('claude',{schemaJson:'{}',claudeModel:'gpt'}),/Claude model/);
   assert.throws(()=>groupingArgs('codex',{}),/format/);
+  assert.throws(()=>groupingArgs('claude',{schemaJson:'{}',systemPrompt:''}),/instructions/);
+  assert.throws(()=>groupingArgs('claude',{schemaJson:'{}',systemPrompt:'x'.repeat(16_001)}),/instructions/);
 });
 test('Codex grouping writes the schema privately, parses the last agent message and cleans up',async t=>{
   const tmp=await sandbox(t);

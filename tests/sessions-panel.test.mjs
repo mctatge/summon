@@ -55,6 +55,21 @@ test('the board leads with what needs you, then new replies, then working', () =
   assert.ok(!text.includes('Weekly review prep'));
 });
 
+test('reasoned session names follow recent work while keeping the original name and explanation', () => {
+  const session = { ...original.groups[0].sessions[0], title: 'Finish keyboard navigation in the preview', originalTitle: 'Can you look at this?', headline: 'Harbor · old workstream',
+    titleReasoning: { summary: 'Later messages focus on keyboard access.', evidence: ['The latest request asks for arrow-key navigation.'], confidence: 'high', engine: 'local', model: 'local-model', updatedAt: new Date().toISOString() } };
+  withGroups([{ ...original.groups[0], sessions: [session] }], () => {
+    const html = board();
+    assert.match(html, /class="as-open [^"]*"[^>]*>[\s\S]*?Finish keyboard navigation in the preview/);
+    assert.ok(words(html).includes('“Can you look at this?”'), 'the original app title remains available');
+    assert.ok(words(html).includes('From recent context'), 'the user can distinguish an inferred name');
+    assert.match(html, /Later messages focus on keyboard access/);
+    assert.match(html, /The latest request asks for arrow-key navigation/);
+    assert.ok(!words(html).includes('old workstream'), 'a stale project address does not displace the new name');
+    assert.match(html, /as-chip as-project/, 'project context remains visible beside a generated title');
+  });
+});
+
 test('rows carry the title, place, state words, unread marks and the open action', () => {
   const html = board();
   const text = words(html);

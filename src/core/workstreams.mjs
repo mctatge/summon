@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { unreadableAnswer } from './answer-retry.mjs';
 
 const deepFreeze = value => { if (value && typeof value === 'object' && !Object.isFrozen(value)) { Object.freeze(value); for (const child of Object.values(value)) deepFreeze(child); } return value; };
 
@@ -804,14 +805,15 @@ function orderAndName(list) {
 
 /**
  * Checks a model answer against the request. Recoverable problems are fixed and reported in `problems`;
- * an answer that is not an object, or that places none of the items, throws so nothing is stored.
+ * an answer that is not an object, or that places none of the items, throws so nothing is stored. Those throws carry
+ * UNREADABLE_ANSWER so the grouping job may ask once more.
  */
 export function validateGrouping(raw, request, place) {
   const problems = [];
   const note = message => { if (problems.length < LIMITS.problems) problems.push(message); };
   let value = raw;
   if (typeof value === 'string') { try { value = JSON.parse(value); } catch { value = null; } }
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('The grouping answer was not in the expected format. Nothing was saved.');
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw unreadableAnswer('The grouping answer was not in the expected format. Nothing was saved.');
   const known = request?.items instanceof Map ? request.items : new Map();
   const branchIds = request?.branchIds instanceof Map ? request.branchIds : new Map();
   const privatePaths = Array.isArray(request?.privatePaths) ? request.privatePaths : [];
@@ -848,7 +850,7 @@ export function validateGrouping(raw, request, place) {
   for (const draft of drafts) {
     for (const id of [...draft.shared]) if (!claimed.has(id)) { claimed.set(id, draft); draft.items.push(id); draft.shared.delete(id); }
   }
-  if (known.size && !claimed.size) throw new Error('The model did not place any of the changes. Nothing was saved.');
+  if (known.size && !claimed.size) throw unreadableAnswer('The model did not place any of the changes. Nothing was saved.');
   const unclaimed = [...known.keys()].filter(id => !claimed.has(id));
   if (unclaimed.length) {
     note(`${count(unclaimed.length, 'item was', 'items were')} not placed and went to "Other changes".`);

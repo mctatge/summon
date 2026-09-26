@@ -963,3 +963,63 @@ test('excerpts are read at twice the shown width and renamed private files are n
   assert.deepEqual(excerptPaths, ['src/app.ts']);
   assert.equal(view.repos[0].places[0].files.find(file => file.path === 'archive/contact-a.md').private, true);
 });
+
+test('a refused grouping answer is asked for once more; other failures and a second refusal are not', async t => {
+  const unreadable = () => Object.assign(new Error('Codex returned a grouping Summon could not read. Try again.'), { code: 'UNREADABLE_ANSWER' });
+  const cases = [
+    { name: 'Recovers', answers: [unreadable(), 'good'], calls: 2, status: 'done' },
+    { name: 'Placesnone', answers: [{ workstreams: [{ title: 'x', items: ['F999'] }] }, 'good'], calls: 2, status: 'done' },
+    { name: 'Twice', answers: [unreadable(), unreadable(), 'good'], calls: 2, status: 'failed', error: /Twice was not grouped\. Codex returned a grouping Summon could not read/ },
+    { name: 'Signedout', answers: [new Error('Claude’s subscription login has expired. Use Reconnect Claude, finish signing in, then try again.'), 'good'], calls: 1, status: 'failed', error: /login has expired/ },
+    { name: 'Timedout', answers: [new Error('The operation timed out. Please try again.'), 'good'], calls: 1, status: 'failed', error: /timed out/ },
+  ];
+  for (const item of cases) {
+    const prompts = [];
+    const f = await fixture(t, { names: [item.name], group: async (engine, request) => {
+      const next = item.answers[prompts.length]; prompts.push(request.prompt);
+      if (next instanceof Error) throw next;
+      return { raw: next === 'good' ? answerFor(request.prompt) : next, model: null };
+    } });
+    f.raws[f.repos[item.name]] = rawRepo(f.repos[item.name], [place(f.repos[item.name], [change('a.ts'), change('b.ts')])]);
+    f.wif.group();
+    const view = await settle(f.wif);
+    assert.equal(prompts.length, item.calls, item.name);
+    assert.equal(prompts.at(-1), prompts[0], `${item.name}: the second request is the same request`);
+    assert.equal(view.job.status, item.status, item.name);
+    const saved = JSON.parse(await fs.readFile(f.file, 'utf8')).groupings[f.repos[item.name]];
+    if (item.status === 'done') { assert.deepEqual(view.job.errors, []); assert.equal(saved.grouping.workstreams[0].title, 'Product: first change'); }
+    else { assert.equal(view.job.errors.length, 1); assert.match(view.job.errors[0], item.error); assert.equal(saved, undefined); assert.equal(view.repos[0].places[0].grouping.engine, 'paths'); assert.equal(view.repos[0].places[0].grouping.note, NOTE_FALLBACK); }
+  }
+});
+
+test('a folder excluded after a refused answer is not sent again', async t => {
+  let calls = 0, f;
+  f = await fixture(t, { names: ['Leaving'], group: async () => {
+    calls++;
+    await f.wif.updateSettings({ excludedRoots: [f.repos.Leaving] });
+    throw Object.assign(new Error('Codex returned a grouping Summon could not read. Try again.'), { code: 'UNREADABLE_ANSWER' });
+  } });
+  f.raws[f.repos.Leaving] = rawRepo(f.repos.Leaving, [place(f.repos.Leaving, [change('a.ts'), change('b.ts')])]);
+  f.wif.group();
+  await settle(f.wif);
+  assert.equal(calls, 1);
+});
+
+test('a refused answer is not sent again once the folder turned private, grouping was switched off, or Summon is closing', async t => {
+  const refused = () => Object.assign(new Error('Codex returned a grouping Summon could not read. Try again.'), { code: 'UNREADABLE_ANSWER' });
+  const mutations = {
+    Private: f => f.wif.updateSettings({ privatePaths: { [f.repos.Private]: ['pilot/'] } }),
+    Folders: f => f.wif.updateSettings({ engine: 'off' }),
+    Switched: f => f.wif.updateSettings({ engine: 'claude' }),
+    Closing: f => { void f.wif.close(); },
+  };
+  for (const [name, mutate] of Object.entries(mutations)) {
+    let calls = 0, f;
+    f = await fixture(t, { names: [name], group: async () => { calls++; await mutate(f); throw refused(); } });
+    f.raws[f.repos[name]] = rawRepo(f.repos[name], [place(f.repos[name], [change('a.ts'), change('pilot/b.ts')])]);
+    f.wif.group();
+    if (name === 'Closing') { for (let i = 0; i < 400 && calls === 0; i++) await delay(5); await f.wif.close(); }
+    else await settle(f.wif);
+    assert.equal(calls, 1, name);
+  }
+});
