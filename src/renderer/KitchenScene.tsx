@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowLeft, ArrowRight, ChefHat, CircleAlert, Folder, Pause, Play, RotateCcw, Route } from 'lucide-react';
 import type { AgentSession } from './types';
 import { createKitchenScene } from './kitchen-scene';
+import { FullscreenButton } from './FullscreenButton';
 import './kitchen-scene.css';
 
 type Props = {
@@ -22,6 +23,7 @@ const activityLabel: Record<AgentSession['activity'], string> = {
 
 /** The room illustrates existing session state. It neither observes agents nor infers completed work. */
 export default function KitchenScene({ sessions, selected, paused, scopeLabel = 'all projects', onPausedChange, onSelect, onTrace }: Props) {
+  const stage = useRef<HTMLDivElement>(null);
   const host = useRef<HTMLDivElement>(null);
   const room = useRef<ReturnType<typeof createKitchenScene> | null>(null);
   const current = useRef({ sessions, onSelect });
@@ -80,10 +82,11 @@ export default function KitchenScene({ sessions, selected, paused, scopeLabel = 
         <button type="button" className="vw-button" disabled={Boolean(problem)} onClick={() => room.current?.resetCamera()} aria-label="Reset kitchen camera" title="Reset kitchen camera"><RotateCcw size={14} /></button>
       </div>
     </div>
-    <div className={`ks-stage ${problem ? 'ks-failed' : ''}`}>
-      <div className="ks-canvas-host" ref={host} role="img" aria-label="Interactive 3D kitchen showing the sessions listed below. Drag to orbit, scroll to zoom, or select a chef. Keyboard users can select the same session from its ticket below." />
+    <div ref={stage} className={`ks-stage ${problem ? 'ks-failed' : ''}`}>
+      <div className="ks-canvas-host" ref={host} role="img" aria-label="Interactive 3D kitchen showing the sessions listed below. Drag to orbit, scroll with two fingers to pan, pinch to zoom, or select a chef. Keyboard users can select the same session from its ticket below." />
+      <div className="ks-fullscreen"><FullscreenButton target={stage} label="Kitchen canvas" /></div>
       {problem && <div className="ks-fallback" role="status"><CircleAlert size={24} /><strong>The 3D kitchen is unavailable</strong><p>{problem}</p><button type="button" className="vw-button" onClick={() => { setProblem(''); setRetry(value => value + 1); }}>Try 3D again</button></div>}
-      {!problem && <div className="ks-camera-hint" aria-hidden="true">Drag to orbit <span>·</span> Scroll to zoom <span>·</span> Pick a chef</div>}
+      {!problem && <div className="ks-camera-hint" aria-hidden="true">Drag to orbit <span>·</span> Two fingers to pan <span>·</span> Pinch to zoom <span>·</span> Pick a chef</div>}
       {!problem && (paused || reduced) && <div className="ks-motion-badge">{reduced ? 'Reduced motion' : 'Animation paused'} · states still update</div>}
       {!sessions.length && !problem && <div className="ks-empty-note"><strong>The kitchen is quiet.</strong><span>{scopeLabel.toLowerCase() === 'all projects' ? 'Sessions across all projects and folders appear here when Summon detects them.' : `Sessions in ${scopeLabel} appear here when Summon detects them.`}</span></div>}
     </div>

@@ -1,0 +1,20 @@
+.view-fullscreen-control { display:inline-flex; position:relative; flex-shrink:0; }
+.view-fullscreen-error { position:absolute; z-index:2; right:0; top:100%; width:240px; padding:12px; border:1px solid var(--control-line); border-radius:8px; background:var(--paper-raised); color:var(--ink); font-size:12px; line-height:1.5; box-shadow:0 6px 20px var(--shadow-ink); }
+.git-map-toolbar > .view-fullscreen-control { margin-left:auto; }
+.git-map:fullscreen, .work-tree:fullscreen {
+  box-sizing:border-box; display:flex !important; flex-direction:column;
+  width:100vw !important; height:100dvh !important;
+  max-width:none !important; max-height:none !important; min-height:0;
+  margin:0 !important; border:0 !important; border-radius:0 !important;
+  background:var(--paper); color:var(--ink); overflow:hidden;
+}
+.git-map:fullscreen .git-map-viewport,
+.work-tree:fullscreen .wt-viewport { flex:1; height:auto; min-height:0; }
+.git-map:fullscreen .git-map-toolbar,
+.git-map:fullscreen .git-map-help,
+.work-tree:fullscreen .wt-toolbar,
+.work-tree:fullscreen .wt-footer { flex-shrink:0; }
+.work-tree:fullscreen .wt-toolbar { padding:12px 20px; }
+.work-tree:fullscreen > .wt-heading,
+.work-tree:fullscreen > .wt-breadcrumbs,
+.work-tree:fullscreen > .wt-unlinked { display:none; }

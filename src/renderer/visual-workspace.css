@@ -1,10 +1,10 @@
 /* Paper workbench. The diagrams own the space; controls stay small and quiet. */
 .preferences-dialog.vw-dialog {
   --vw-rule: var(--control-line);
-  --vw-rail: #bcc7bb;
-  --vw-muted: #68756a;
-  --vw-grid: rgba(50, 68, 54, .055);
-  --vw-pot: #59766b;
+  --vw-rail: var(--map-rail, #bcc7bb);
+  --vw-muted: var(--ink-secondary, #68756a);
+  --vw-grid: var(--map-grid, rgba(50, 68, 54, .055));
+  --vw-pot: var(--success, #59766b);
   width: min(1240px, calc(100vw - 32px));
   height: min(900px, calc(100dvh - 32px));
   max-height: calc(100dvh - 32px);
@@ -69,6 +69,38 @@
 .vw-goal-node[aria-pressed=true], .vw-code-node[aria-pressed=true] { border-color: var(--petrol); background: var(--petrol-wash); }
 .vw-goal-node strong, .vw-code-node strong { font-size: 13px; line-height: 1.5; margin-top: 6px; font-weight: 550; display: block; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .vw-goal-node small, .vw-code-node small { display: block; margin-top: 4px; font-size: 10px; color: var(--ink-secondary); }
+.vw-reasoning { padding: 20px; background: var(--petrol-wash); border-radius: 6px; margin-bottom: 28px; }
+.vw-reasoning-kicker { display: flex; gap: 8px; align-items: center; color: var(--petrol); font-size: 11px; font-weight: 600; }
+.vw-reasoning-summary { font-size: 16px; font-weight: 500; line-height: 1.6; letter-spacing: -.2px; margin: 12px 0 20px; overflow-wrap: anywhere; }
+.vw-reasoning-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.vw-reasoning-controls label { display: inline-flex; align-items: center; gap: 8px; color: var(--ink-secondary); font-size: 11px; min-height: 40px; }
+.vw-reasoning-controls select { max-width: 156px; min-height: 36px; border: 1px solid var(--vw-rule); border-radius: 4px; padding: 4px 8px; background: var(--paper-raised); color: var(--ink); font-size: 11px; }
+.vw-reasoning-toggle input { accent-color: var(--petrol); }
+.vw-reasoning-controls .vw-button { min-height: 36px; margin-left: auto; }
+.vw-reasoning-status { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; color: var(--vw-muted); font-size: 10px; line-height: 1.5; }
+.vw-reasoning-status > span:last-child:not(:first-child) { margin-left: auto; }
+.vw-reasoning-error { display: flex; align-items: flex-start; gap: 8px; color: var(--error); font-size: 11px; line-height: 1.6; margin-top: 12px; }
+.vw-reasoning-error svg { margin-top: 2px; flex-shrink: 0; }
+.vw-goal-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 24px 0 12px; }
+.vw-goal-section-heading h4 { font-size: 13px; font-weight: 600; }
+.vw-goal-section-heading > span { font-size: 10px; color: var(--vw-muted); }
+.vw-inferred-goals { display: grid; gap: 12px; }
+.vw-inferred-goal { display: block; width: 100%; padding: 16px; text-align: left; background: var(--paper-raised); color: var(--ink); border: 1px solid var(--vw-rule); border-radius: 6px; }
+.vw-inferred-goal:hover { border-color: var(--petrol); }
+.vw-inferred-goal[aria-pressed=true] { background: var(--petrol-wash); border-color: var(--petrol); }
+.vw-inferred-goal-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 10px; color: var(--petrol); }
+.vw-inferred-goal-meta > span { margin-left: auto; color: var(--vw-muted); }
+.vw-inferred-goal > strong { display: block; font-size: 16px; line-height: 1.45; font-weight: 550; margin: 8px 0; overflow-wrap: anywhere; }
+.vw-inferred-goal > p { font-size: 12px; color: var(--ink-secondary); line-height: 1.6; overflow-wrap: anywhere; }
+.vw-inferred-goal-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 16px; }
+.vw-inferred-goal-footer > span:last-child { display: inline-flex; align-items: center; gap: 8px; color: var(--petrol); font-size: 11px; }
+.vw-goal-empty { padding: 16px 0; color: var(--ink-secondary); font-size: 12px; line-height: 1.6; }
+.vw-goal-empty > .vw-button { margin-top: 16px; }
+.vw-goal-empty .vw-project-choices { justify-content: flex-start; }
+.vw-reasoning-evidence p { margin-top: 12px; font-size: 12px; line-height: 1.6; color: var(--ink-secondary); overflow-wrap: anywhere; }
+.vw-reasoning-evidence ul { padding-left: 16px; margin: 12px 0 0; color: var(--ink-secondary); font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.vw-reasoning-evidence li + li { margin-top: 8px; }
+.vw-reasoning-evidence p.vw-footnote { font-size: 10px; color: var(--vw-muted); }
 .vw-state { display: inline-flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-secondary); line-height: 1.4; }
 .vw-state > span { display: inline-flex; align-items: center; justify-content: center; width: 10px; height: 10px; border: 1px solid currentColor; border-radius: 50%; }
 .vw-state.working { color: var(--petrol); }
@@ -225,3 +257,69 @@
 .vw-main.vw-main-kitchen { display: block; overflow: auto; }
 .vw-main-kitchen > .vw-stage { padding: 20px 24px 24px; overflow: visible; }
 .vw-main-kitchen > .vw-inspector { display: none; }
+
+/* Work records share the inspector's paper and ink; only attention gets amber. */
+.vw-goal-node { height: 124px; }
+.vw-goal-next { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 11px; color: var(--ink-secondary); margin-top: 4px; }
+.vw-state.needs-verification { color: var(--warning); }
+.vw-state.needs-verification > span { background: var(--warning-wash); border-radius: 2px; }
+.vw-state.deferred, .vw-state.dismissed { color: var(--vw-muted); }
+.vw-work-queue { margin: 0 0 24px; border-top: 1px solid var(--receipt-line); }
+.vw-work-row { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; width: 100%; text-align: left; padding: 16px 12px; background: transparent; color: var(--ink); border: 0; border-bottom: 1px solid var(--receipt-line); border-radius: 4px; }
+.vw-work-row:hover, .vw-work-row[aria-pressed=true] { background: var(--petrol-wash); }
+.vw-work-row > strong { font-size: 13px; font-weight: 600; }
+.vw-work-next { font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.vw-work-row > small { font-size: 10px; line-height: 1.5; color: var(--vw-muted); }
+.vw-work-queue > details > summary { cursor: pointer; padding: 12px; color: var(--ink-secondary); font-size: 11px; }
+.vw-goal-editor textarea { width: 100%; min-width: 0; resize: vertical; padding: 8px; color: var(--ink); border: 1px solid var(--vw-rule); border-radius: 4px; background: var(--paper-inset); font: inherit; font-size: 12px; line-height: 1.5; }
+.vw-goal-editor textarea::placeholder { color: var(--vw-muted); }
+.vw-record-label { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--ink-secondary); margin: 0 0 12px; }
+.vw-record-label > span { color: var(--vw-muted); }
+.vw-record-checks { margin: 20px 0; }
+.vw-check-edit { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.vw-check-edit > input[type=checkbox] { flex: none; accent-color: var(--petrol); }
+.vw-record-remove { display: flex; align-items: center; justify-content: center; flex: none; width: 28px; height: 32px; color: var(--vw-muted); background: transparent; border: 0; border-radius: 4px; }
+.vw-record-remove:hover { background: var(--paper-inset); color: var(--error); }
+.vw-record-entry { padding: 12px 0 16px; margin-bottom: 16px; border-bottom: 1px solid var(--receipt-line); }
+.vw-record-warning { padding: 12px; color: var(--warning); background: var(--warning-wash); font-size: 11px; line-height: 1.6; margin: 12px 0; border-radius: 4px; }
+.vw-record-warning p { margin-top: 8px; }
+.vw-record-next > p:first-of-type { font-size: 13px; color: var(--ink); }
+.vw-record-checklist { list-style: none; padding: 0; margin: 12px 0 0; }
+.vw-record-checklist li { display: flex; align-items: flex-start; gap: 8px; font-size: 11px; line-height: 1.6; margin: 8px 0; }
+.vw-record-checklist li > span:first-child { width: 14px; flex: none; color: var(--petrol); }
+.vw-record-checklist .checked { color: var(--vw-muted); }
+.vw-preserve-lines { white-space: pre-wrap; }
+.vw-record-conflicts .vw-inspector-kicker { display: flex; align-items: center; gap: 8px; color: var(--warning); }
+.vw-record-conflicts > div { margin-top: 12px; font-size: 11px; line-height: 1.6; }
+.vw-record-conflicts ul { padding-left: 16px; color: var(--ink-secondary); }
+.vw-record-finding { margin-top: 16px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.vw-record-finding strong { font-weight: 550; }
+.vw-record-finding p { color: var(--ink-secondary); margin-top: 8px; }
+.vw-record-reference { display: block; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 10px; color: var(--vw-muted); margin-top: 8px; }
+.vw-record-details { margin-top: 20px; border-top: 1px solid var(--receipt-line); padding-top: 16px; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.vw-record-details summary { cursor: pointer; color: var(--ink-secondary); font-weight: 500; }
+.vw-record-details p { margin-top: 12px; }
+.vw-record-details ul, .vw-record-details ol, .vw-record-origin { padding-left: 16px; color: var(--ink-secondary); margin-top: 12px; line-height: 1.6; }
+.vw-record-details li + li, .vw-record-origin li + li { margin-top: 12px; }
+.vw-goal-editor .vw-reconfirm { flex-direction: row; align-items: flex-start; line-height: 1.6; padding: 12px; margin-top: 20px; background: var(--warning-wash); border-radius: 4px; }
+.vw-reconfirm input { flex: none; margin-top: 3px; accent-color: var(--petrol); }
+
+/* The Git overview uses the stage as its viewport; folder details retain the normal scroll. */
+.vw-main.vw-main-git-overview { display: flex; flex-direction: column; overflow: hidden; }
+.vw-main.vw-main-git-overview > .vw-stage { display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: hidden; padding: 16px 24px; }
+.vw-main-git-overview .git-workspace { display: flex; flex: 1; flex-direction: column; min-height: 0; width: 100%; }
+.vw-main-git-overview .git-folder-map { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.vw-main-git-overview .git-map-heading { flex: none; margin-bottom: 12px; }
+.vw-main-git-overview .git-map { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.vw-main-git-overview .git-map-toolbar { flex: none; padding: 8px 12px; }
+.vw-main-git-overview .git-map-viewport { flex: 1; min-height: 0; height: auto; }
+.vw-main-git-overview .git-map-help { flex: none; padding: 7px 12px; }
+.vw-main-git-overview .git-folder-map > .git-note { flex: none; font-size: 10px; line-height: 1.5; margin-top: 8px; }
+.vw-main-git-overview .vw-empty { min-height: 0; }
+@media (max-width: 740px) {
+  .vw-main.vw-main-git-overview > .vw-stage { padding: 12px; }
+  .vw-main-git-overview .git-map-heading { gap: 8px; margin-bottom: 8px; }
+  .vw-main-git-overview .git-map-heading input { min-height: 36px; }
+  .vw-main-git-overview .git-map-heading h4 { font-size: 14px; }
+  .vw-main-git-overview .git-map-heading p { margin-top: 3px; font-size: 11px; }
+}

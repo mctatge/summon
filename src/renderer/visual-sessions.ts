@@ -1,7 +1,17 @@
-import type { AgentSession, AgentSessionsView, WifRepo } from './types';
+import type { AgentSession, AgentSessionsView, Project, WifRepo } from './types';
 
 export const ALL_PROJECTS = 'all';
 export type VisualSessionScope = { value: string; label: string; repoId: string | null };
+
+/** Working in is explicit context; choosing its scope never needs reasoning.
+ * Project-backed repository ids are project ids. Keep that choice visible while
+ * discovery loads, then retain a project-only scope for non-Git workspaces. */
+export function getWorkingProjectScope(project: Project | null | undefined, repos: WifRepo[] | null): VisualSessionScope | null {
+  if (!project) return null;
+  const repo = repos?.find(item => item.projectId === project.id || item.id === project.id);
+  const repoId = repo?.id ?? (repos === null ? project.id : null);
+  return { value: repoId ? `repo:${repoId}` : `project:${project.name}`, label: project.name, repoId };
+}
 
 const ACTIVITY_ORDER: Record<AgentSession['activity'], number> = {
   'needs-you': 0, failed: 1, working: 2, open: 3, interrupted: 4, quiet: 5, unknown: 6,

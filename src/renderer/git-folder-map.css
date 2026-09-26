@@ -1,0 +1,31 @@
+.git-folder-map { min-width: 0; }
+.git-map-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.git-map-heading h4 { margin: 0; font-size: 16px; font-weight: 600; }
+.git-map-heading p { margin: 6px 0 0; font-size: 12px; color: var(--ink-secondary); }
+.git-map-heading input { width: min(340px, 45%); min-height: 40px; padding: 8px 12px; font: inherit; font-size: 12px; color: var(--ink); background: var(--paper-inset); border: 1px solid var(--control-line); border-radius: 6px; }
+.git-map-edges { position: absolute; inset: 0; pointer-events: none; }
+.git-map-edges path { fill: none; stroke: var(--control-line); stroke-width: 2; }
+.git-map-project, .git-map-folder { position: absolute; display: flex; flex-direction: column; gap: 8px; padding: 16px; text-align: left; border: 1px solid var(--control-line); border-radius: 10px; color: var(--ink); background: var(--paper-raised); box-sizing: border-box; font: inherit; }
+button.git-map-project, .git-map-folder { cursor: pointer; }
+button.git-map-project:hover, .git-map-folder:hover { border-color: var(--petrol); background: var(--petrol-wash); }
+.git-map-kicker { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--ink-secondary); }
+.git-map-kicker > svg:last-child:not(:first-child) { margin-left: auto; }
+.git-map-project > strong, .git-map-folder > strong { font-size: 15px; line-height: 20px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.git-map-folder > strong { display: flex; align-items: center; gap: 6px; }
+.git-map-folder > strong > svg { flex-shrink: 0; }
+.git-map-folder > strong > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-map-project > small, .git-map-folder > small { font-size: 11px; line-height: 15px; color: var(--ink-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.git-map-folder-status { font-size: 12px; font-weight: 550; }
+.git-map-folder-attention { border-color: var(--warning); }
+.git-map-folder-attention .git-map-folder-status { color: var(--warning); }
+.git-map-folder-label { margin-top: auto; font-size: 10px !important; }
+.git-map-world[data-level=overview] :is(.git-map-sync, .git-map-folder-label), .git-map-world[data-level=distant] :is(.git-map-kicker, .git-map-sync, .git-map-folder-label) { display: none; }
+.git-map-world[data-level=distant] :is(.git-map-project, .git-map-folder) { justify-content: center; }
+.git-map-world[data-level=distant] :is(.git-map-project, .git-map-folder) > strong { font-size: 20px; line-height: 26px; }
+.git-map-world[data-level=distant] .git-map-folder-status { font-size: 15px; }
+.git-map-heading input:focus-visible, .git-folder-map button:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.git-breadcrumbs { display: flex; align-items: center; gap: 8px; margin-bottom: 20px; font-size: 12px; color: var(--ink-secondary); flex-wrap: wrap; }
+.git-breadcrumbs button { border: 0; background: transparent; color: var(--ink); min-height: 36px; padding: 4px 0; font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.git-breadcrumbs > span { overflow-wrap: anywhere; }
+.git-overview-picker { margin-bottom: 20px; }
+@media(max-width:740px) { .git-map-heading { align-items: stretch; flex-direction: column; } .git-map-heading input { width: 100%; } }

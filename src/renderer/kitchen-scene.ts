@@ -1,6 +1,7 @@
 import * as T from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { wheelPixels } from './map-wheel.mjs';
 import { createChef, animateChef, apronColors } from './agenttrail/chefs.js';
 import { batchMeshes } from './agenttrail/batch.js';
 import { ball, bell, board, box, bunting, colors, counter, cylinder, group, ingredient, material, plant, plaque, plate, pot, recipe, resetArtCaches, rod, sink, stove, torus, wood } from './agenttrail/art.js';
@@ -190,13 +191,14 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
   canvas.className = 'vw-kitchen-canvas';
   canvas.tabIndex = 0;
   canvas.setAttribute('role', 'img');
-  canvas.setAttribute('aria-label', 'Interactive 3D kitchen. Drag to orbit, scroll to zoom, press 0 to reset, or 1 through 6 to select a cook.');
+  canvas.setAttribute('aria-label', 'Interactive 3D kitchen. Drag to orbit, scroll with two fingers to pan, pinch to zoom, press 0 to reset, or 1 through 6 to select a cook.');
   canvas.style.touchAction = 'none';
   canvas.style.display = 'block';
   canvas.style.width = '100%'; canvas.style.height = '100%';
   host.appendChild(canvas);
   const scene = new T.Scene();
   scene.background = new T.Color(0xf4dcb0);
+  const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
   const camera = new T.OrthographicCamera(-9, 9, 7, -7, .1, 90);
   const controls = new OrbitControls(camera, canvas);
   controls.enablePan = false;
@@ -216,6 +218,8 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
   const raycaster = new T.Raycaster();
   const pointer = new T.Vector2();
   const sun = new T.DirectionalLight(0xffe0ab, 3.2);
+  const hemisphere = new T.HemisphereLight(0xfff2d7, 0xa1825c, 1.05);
+  const fill = new T.DirectionalLight(0xc1eaff, .6);
   let environmentTarget: T.WebGLRenderTarget | null = null;
   let disposed = false;
   let lost = false;
@@ -247,6 +251,16 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
   };
   const schedule = () => { if (visible() && frame === null && (dirty || animate())) frame = requestAnimationFrame(renderFrame); };
   const invalidate = () => { dirty = true; schedule(); };
+  const updateAppearance = () => {
+    const dark = colorScheme.matches;
+    (scene.background as T.Color).setHex(dark ? 0x202321 : 0xf4dcb0);
+    renderer.toneMappingExposure = dark ? .82 : 1;
+    scene.environmentIntensity = dark ? .26 : .34;
+    sun.intensity = dark ? 2.3 : 3.2;
+    hemisphere.intensity = dark ? .8 : 1.05;
+    fill.intensity = dark ? .45 : .6;
+    invalidate();
+  };
   const setRoute = (cook: Cook) => {
     const target = destination(cook);
     cook.route = routeBetween(cook.chef.root.position, target, cook.slot);
@@ -372,6 +386,14 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
     }
   };
   const pointerCancel = () => { down = null; };
+  const wheel = (event: WheelEvent) => {
+    // Trackpad pinch arrives with ctrlKey; leave it to OrbitControls' zoom.
+    // Ordinary scrolling moves the scene in screen space instead.
+    if (event.ctrlKey || !controls.enabled || disposed || lost) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    const delta = wheelPixels(event, { width: canvas.clientWidth, height: canvas.clientHeight });
+    controls.pan(-delta.x, -delta.y);
+  };
   const keyDown = (event: KeyboardEvent) => {
     if (event.key === '0') { event.preventDefault(); resetCamera(); }
     else if (/^[1-6]$/.test(event.key)) { const key = order[Number(event.key) - 1]; if (key) { event.preventDefault(); options.onSelect(key); } }
@@ -384,10 +406,12 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
   const dispose = () => {
     if (disposed) return;
     disposed = true; cancelFrame(); observer?.disconnect(); intersection?.disconnect();
+    colorScheme.removeEventListener('change', updateAppearance);
     document.removeEventListener('visibilitychange', visibilityChange);
     canvas.removeEventListener('webglcontextlost', contextLost);
     canvas.removeEventListener('pointerdown', pointerDown); canvas.removeEventListener('pointermove', pointerMove);
     canvas.removeEventListener('pointerup', pointerUp); canvas.removeEventListener('pointercancel', pointerCancel); canvas.removeEventListener('keydown', keyDown);
+    canvas.removeEventListener('wheel', wheel, true);
     controls.removeEventListener('change', invalidate); controls.dispose();
     for (const cook of cooks.values()) removeCook(cook); cooks.clear();
     scene.clear(); roomResources.dispose(); effectResources.dispose();
@@ -405,13 +429,15 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
     const generator = new T.PMREMGenerator(renderer);
     try { environmentTarget = generator.fromScene(environment, .06); scene.environment = environmentTarget.texture; scene.environmentIntensity = .34; }
     finally { environment.dispose(); generator.dispose(); }
-    scene.add(new T.HemisphereLight(0xfff2d7, 0xa1825c, 1.05));
+    scene.add(hemisphere);
     sun.position.set(-5, 14, 8); sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048); sun.shadow.camera.left = -11; sun.shadow.camera.right = 11;
     sun.shadow.camera.top = 10; sun.shadow.camera.bottom = -10; sun.shadow.camera.near = .5; sun.shadow.camera.far = 36;
     sun.shadow.normalBias = .025; sun.shadow.bias = -.0002; sun.shadow.radius = 3;
     scene.add(sun);
-    const fill = new T.DirectionalLight(0xc1eaff, .6); fill.position.set(7, 9, -4); scene.add(fill);
+    fill.position.set(7, 9, -4); scene.add(fill);
+    updateAppearance();
+    colorScheme.addEventListener('change', updateAppearance);
     makeRoom(room); batchMeshes(room); roomResources.adopt(room);
     const steamGeometry = effectResources.geometry(new T.SphereGeometry(.09, 8, 6));
     for (let slot = 0; slot < POSITIONS.length; slot++) for (let i = 0; i < 3; i++) {
@@ -423,6 +449,7 @@ export function createKitchenScene(host: HTMLElement, options: Options): Kitchen
     canvas.addEventListener('webglcontextlost', contextLost);
     canvas.addEventListener('pointerdown', pointerDown); canvas.addEventListener('pointermove', pointerMove);
     canvas.addEventListener('pointerup', pointerUp); canvas.addEventListener('pointercancel', pointerCancel); canvas.addEventListener('keydown', keyDown);
+    canvas.addEventListener('wheel', wheel, { capture: true, passive: false });
     document.addEventListener('visibilitychange', visibilityChange);
     observer = new ResizeObserver(resize); observer.observe(host);
     if (typeof IntersectionObserver !== 'undefined') {

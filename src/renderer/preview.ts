@@ -2,12 +2,27 @@ import type { Snapshot } from './types';
 import type { WifFile, WifPlace, WorkInFlightStanding } from './types';
 import type { AgentSession, AgentSessionAddress, AgentSessionWork, AgentSessionsView, LocatedAgentSession } from './types';
 import type { WifStanding, WifStandingEntry, WifStandingNote, WifStandingRepo } from './types';
-import type { VisualRepository, VisualGoal } from './types';
+import type { ContextReasoningView, VisualRepository, VisualGoal } from './types';
 
 // These records only render in a regular browser without the native bridge.
 // Preview never opens files, changes settings, or captures activity.
 const now = Date.now();
 const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
+
+export function previewContextReasoning(): ContextReasoningView {
+  const sessions = previewAgentSessions.groups.flatMap(group => group.sessions);
+  return {
+    settings: { enabled: true, engine: 'auto' }, status: 'ready', updatedAt: ago(2), engine: 'local', model: 'Local preview', error: null, stale: false,
+    summary: 'You’re making the workspace easier to follow, while refining how the draft board recommends the next pick.',
+    goals: previewWorkInFlight.repos.filter(repo => !repo.error).slice(0, 2).map((repo, index) => ({
+      id: `inferred-preview-${repo.id}`, repoId: repo.id, title: index ? 'Help players make the next draft pick' : 'Make the workspace explain what changed', status: 'working', parentId: null, dependsOn: [],
+      links: { placeId: repo.places[0]?.id ?? null, branch: repo.places[0]?.branch ?? null, sessionKey: sessions.find(session => session.repoId === repo.id)?.key ?? null, component: null },
+      createdAt: ago(12), updatedAt: ago(2),
+      inference: { summary: index ? 'Recent session requests focus on counter-pick scoring and clearer recommendations.' : 'The latest conversation connects the preview, shared controls and project context into one understandable workspace.', evidence: ['Recent user messages describe the desired outcome.', `Active sessions and changed files belong to ${repo.name}.`], confidence: 'high', engine: 'local', model: 'Local preview', updatedAt: ago(2) },
+    })),
+    sessionTitles: [],
+  };
+}
 
 // Synthetic data for the explicitly labelled browser preview only. Native reads never use these records.
 export function previewVisualRepository(repoId: string): VisualRepository {
@@ -22,7 +37,16 @@ export function previewVisualRepository(repoId: string): VisualRepository {
   const goal = (id: string, title: string, status: VisualGoal['status'], parentId: string | null, index: number): VisualGoal => ({
     id, repoId, title, status, parentId, dependsOn: [],
     links: { placeId: firstPlace?.id ?? null, branch: firstPlace?.branch ?? null, sessionKey: sessions[index]?.key ?? null, component: index === 1 ? 'src/shared' : 'src/templates' },
-    createdAt: ago(180), updatedAt: ago(3),
+    createdAt: ago(180), updatedAt: ago(3), revision: 1,
+    acceptanceCriteria: 'The complete flow works with a keyboard and preserves the selected project.',
+    nextStep: status === 'done' ? '' : status === 'blocked' ? 'Wait for the preview verification, then review the complete flow.' : 'Verify the preview with keyboard navigation and a second project.',
+    checklist: [{ id: `${id}-keyboard`, text: 'Keyboard navigation reaches every action', done: status === 'done' }, { id: `${id}-project`, text: 'Switching projects preserves the right context', done: status === 'done' }],
+    findings: status === 'done' ? [{ id: `${id}-finding`, text: 'Shared controls already support keyboard activation.', evidence: 'Synthetic preview: accessibility checks pass for button and select controls.', revisitWhen: 'A shared control or keyboard behavior changes.' }] : [],
+    evidence: [], ownerSessionKey: status === 'working' ? sessions[index]?.key ?? null : null,
+    scopePaths: status === 'working' ? ['src/templates'] : [], coordinationKeys: [], serialWith: [], origin: null,
+    completion: status === 'done' ? { kind: 'confirmed', summary: 'Checked the shared controls with keyboard navigation.', reference: 'Synthetic preview verification' } : null,
+    sessionKeys: sessions[index] ? [sessions[index].key] : [],
+    history: [{ at: ago(3), actor: 'user', status, nextStep: status === 'done' ? '' : 'Verify the complete flow.', sessionKey: sessions[index]?.key ?? null }],
   });
   return {
     version: 1, repoId, scannedAt: ago(1),
@@ -47,7 +71,11 @@ export function previewVisualRepository(repoId: string): VisualRepository {
     goals: repo?.error ? [] : [
       { ...goal(rootId, 'Make the workspace easier to follow', 'working', null, 0), links: { placeId: null, branch: null, sessionKey: null, component: null } },
       goal(`${rootId}-controls`, 'Finish the shared controls', 'done', rootId, 1),
-      goal(`${rootId}-preview`, 'Make the preview useful', 'working', rootId, 0),
+      { ...goal(`${rootId}-preview`, 'Make the preview useful', 'needs-verification', rootId, 0),
+        ownerSessionKey: 'codex:desktop:previous-preview-session', sessionKeys: ['codex:desktop:previous-preview-session'], scopePaths: ['src/templates/PreviewDrawer.tsx'],
+        completion: { kind: 'reported', summary: 'The previous session reported that preview selection and keyboard behavior were implemented.', reference: 'Synthetic session checkpoint' },
+        origin: { summary: 'Preview behavior was identified as an unfinished part of the workspace.', evidence: ['User: Keep the right project selected while switching views.'], capturedAt: ago(120) },
+      },
       { ...goal(`${rootId}-review`, 'Review the complete flow', 'blocked', rootId, 2), dependsOn: [`${rootId}-preview`] },
     ],
     traces: sessions.map((session, index) => ({ sessionKey: session.key, truncated: false, events: session.app === 'claude' ? [
@@ -63,23 +91,23 @@ export function previewVisualRepository(repoId: string): VisualRepository {
 export const previewSnapshot: Snapshot = {
   version: 1,
   projects: [
-    { id: 'studio', name: 'Studio', path: '~/Projects/Studio', color: '#356962' },
+    { id: 'harbor', name: 'Harbor', path: '~/Projects/Harbor', color: '#356962' },
     { id: 'learning', name: 'Learning', path: '~/Projects/Learning', color: '#756a53' },
   ],
-  currentProjectId: 'studio',
-  activity: { app: 'Microsoft Excel', bundleId: 'com.microsoft.Excel', title: 'Forecast.xlsx', documentPath: '~/Downloads/Forecast.xlsx', at: ago(1), suggestedProjectId: 'studio', reason: 'Document belongs to the selected workspace.' },
+  currentProjectId: 'harbor',
+  activity: { app: 'Microsoft Excel', bundleId: 'com.microsoft.Excel', title: 'Forecast.xlsx', documentPath: '~/Downloads/Forecast.xlsx', at: ago(1), suggestedProjectId: 'harbor', reason: 'Document belongs to the selected workspace.' },
   files: [
-    { id: 'forecast', name: 'Forecast.xlsx', path: '~/Projects/Studio/Incoming/Forecast.xlsx', originalPath: '~/Downloads/Forecast.xlsx', extension: '.xlsx', size: 58201, firstSeenAt: ago(6), lastSeenAt: ago(1), projectId: 'studio', projectSource: 'selected', status: 'filed', sourceUrl: 'https://example.com/course/materials', reason: 'Studio was selected when this file arrived.', filingAt: ago(5) },
+    { id: 'forecast', name: 'Forecast.xlsx', path: '~/Projects/Harbor/Incoming/Forecast.xlsx', originalPath: '~/Downloads/Forecast.xlsx', extension: '.xlsx', size: 58201, firstSeenAt: ago(6), lastSeenAt: ago(1), projectId: 'harbor', projectSource: 'selected', status: 'filed', sourceUrl: 'https://example.com/course/materials', reason: 'Harbor was selected when this file arrived.', filingAt: ago(5) },
     { id: 'notes', name: 'Workshop notes.pdf', path: '~/Downloads/Workshop notes.pdf', extension: '.pdf', size: 2185100, firstSeenAt: ago(24), lastSeenAt: ago(24), projectId: 'learning', projectSource: 'inferred', status: 'present', reason: 'The filename matches a registered workspace.' },
     { id: 'budget', name: 'September budget.xlsx', path: '~/Downloads/September budget.xlsx', extension: '.xlsx', size: 21522, firstSeenAt: ago(47), lastSeenAt: ago(47), projectId: null, projectSource: null, status: 'present' },
-    { id: 'brief', name: 'Project brief.docx', path: '~/Projects/Studio/Incoming/Project brief.docx', originalPath: '~/Desktop/Project brief.docx', extension: '.docx', size: 38792, firstSeenAt: ago(103), lastSeenAt: ago(90), projectId: 'studio', projectSource: 'corrected', status: 'filed', reason: 'Workspace corrected by you.', filingAt: ago(90) },
+    { id: 'brief', name: 'Project brief.docx', path: '~/Projects/Harbor/Incoming/Project brief.docx', originalPath: '~/Desktop/Project brief.docx', extension: '.docx', size: 38792, firstSeenAt: ago(103), lastSeenAt: ago(90), projectId: 'harbor', projectSource: 'corrected', status: 'filed', reason: 'Workspace corrected by you.', filingAt: ago(90) },
     { id: 'dataset', name: 'Research dataset.csv', path: '~/Downloads/Research dataset.csv', extension: '.csv', size: 350678, firstSeenAt: ago(138), lastSeenAt: ago(138), projectId: null, projectSource: null, status: 'present' },
   ],
   events: [
     { id: 'e1', at: ago(1), type: 'activity', title: 'Microsoft Excel became active', detail: 'Forecast.xlsx' },
-    { id: 'e2', at: ago(5), type: 'filed', title: 'Filing receipt recorded', detail: 'Forecast.xlsx → Studio / Incoming', fileId: 'forecast' },
+    { id: 'e2', at: ago(5), type: 'filed', title: 'Filing receipt recorded', detail: 'Forecast.xlsx → Harbor / Incoming', fileId: 'forecast' },
     { id: 'e3', at: ago(6), type: 'download', title: 'Workbook arrived', detail: 'Forecast.xlsx · Downloads', fileId: 'forecast' },
-    { id: 'e4', at: ago(12), type: 'context', title: 'Workspace selected', detail: 'Studio' },
+    { id: 'e4', at: ago(12), type: 'context', title: 'Workspace selected', detail: 'Harbor' },
   ],
   settings: { paused: false, accessibilityEnabled: false, activityEnabled: true, retentionDays: 30, calendarUrl: '', whisperModel: '', handsFree: false, excludedApps: [] },
   health: { watching: false, accessibility: false, native: false, whisper: false, errors: [], lastScanAt: null },
@@ -167,7 +195,7 @@ export const previewWorkInFlight: WorkInFlightStanding = {
           grouping: { engine: 'codex', model: 'gpt-5-codex', groupedAt: ago(25), stale: false, note: null, workstreams: [
             { id: 'ws-templates', title: 'Templates tab: new preview and formatting compare', summary: 'Replaces the old side-by-side compare with a preview drawer and cleaner formatting rules. Tests are updated, but the new drawer still has placeholder images.', area: 'product', readiness: 'in-progress', files: ['src/templates/FormatCompare.tsx', 'src/templates/PreviewDrawer.tsx', 'src/templates/TemplatesTab.tsx', 'src/templates/assets/', 'src/templates/format.test.ts', 'src/templates/format.ts', 'src/templates/styles.css'], sharedFiles: ['src/shared/Button.tsx'], added: 514, removed: 858, suggestedCommit: 'feat(templates): add preview drawer and formatting compare', private: false },
             { id: 'ws-pricing', title: 'Pricing page: clearer plan table and copy', summary: 'Tightens the plan names and fixes the annual price column. Looks complete.', area: 'frontend', readiness: 'ready', files: ['src/pricing/PlanTable.tsx', 'src/pricing/copy.ts', 'src/shared/Button.tsx'], sharedFiles: [], added: 76, removed: 16, suggestedCommit: 'fix(pricing): clarify plan table and annual prices', private: false },
-            { id: 'ws-outreach', title: 'Customer outreach: notes and emails for the university pilot', summary: 'Private notes and draft emails for the pilot. Keep these on this Mac.', area: 'outreach', readiness: 'scratch', files: ['pilot/emails/intro-draft.md', 'pilot/outreach-plan.md', 'pilot/people/'], sharedFiles: [], added: 34, removed: 0, suggestedCommit: null, private: true },
+            { id: 'ws-outreach', title: 'Customer outreach: notes and emails for the first pilot', summary: 'Private notes and draft emails for the pilot. Keep these on this Mac.', area: 'outreach', readiness: 'scratch', files: ['pilot/emails/intro-draft.md', 'pilot/outreach-plan.md', 'pilot/people/'], sharedFiles: [], added: 34, removed: 0, suggestedCommit: null, private: true },
           ] } }),
         place({ id: 'place-harbor-claude', kind: 'claude', label: 'Claude worktree · calm-lighthouse-8611fb', path: '/Users/you/Projects/Harbor/.claude/worktrees/calm-lighthouse-8611fb', displayPath: '~/Projects/Harbor/.claude/worktrees/calm-lighthouse-8611fb',
           branch: 'quiet-harbor-ff8777', upstream: null, ahead: null, behind: null, aheadOfBase: 2, stateWords: ['not saved yet', 'only on this Mac'], counts: { staged: 0, unstaged: 2, untracked: 0, conflicted: 0, items: 2 }, added: 40, removed: 6, lastChangedAt: ago(140),
