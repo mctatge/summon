@@ -47,6 +47,7 @@
     "directories": {
       "output": "release"
     },
+    "afterPack": "scripts/after-pack.mjs",
     "afterSign": "scripts/after-sign.mjs",
     "files": [
       "dist/**",
