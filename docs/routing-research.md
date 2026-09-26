@@ -601,3 +601,191 @@ Final installed-path preparation: GPU backend/shader setup 17.323 seconds, model
 ## 2026-09-20 implementation update
 
 The local rules-plus-measurement step is now implemented in `src/main/task-routing.mjs`, `engine-choice.mjs` and `task-router.mjs`, with bounded explicit feedback. See [Task routing](desktop-companion.md#task-routing) for current behavior and thresholds. Rules choose reasoning effort; user-rated task cohorts can choose between available subscriptions; quota is the fallback. Claude's exact live model catalog intersects fresh public combined benchmark scores for model selection. This does not implement the earlier embedding workspace-router proposal or a trained model router, and does not integrate Sakana Fugu. No claim of routing accuracy is made from the earlier research numbers; regression fixtures verify the implemented policy, and actual useful/not-useful ratings are accumulated separately.
+
+## 2026-09-20 — Desktop decision speed exploration
+
+The TypeSafe computer-use demo motivated a local-only experiment on the existing
+Apple M1/16 GB Mac and installed `summon-local:latest` model
+(LFM2.5-1.2B-Instruct QAD-Q4_0, Ollama 0.15.6). Ollama reported the entire roughly
+901 MB loaded model allocation in GPU memory. No model download, provider key,
+cloud inference, real screenshot or desktop action was involved.
+
+The benchmark lives in `scripts/benchmark-desktop-decision.mjs`; synthetic cases,
+the isolated selector prototype and the final per-case results live under
+`scripts/experiments/desktop-*`. The prototype is not imported by production.
+It replaces the seven-field generated decision with one snapshot-bound choice
+ID, maps that ID back to a candidate created by application code, and passes
+the result through the unchanged production validator. Candidates include
+compatible controls, selected-app activation, exact visible completion quotes,
+and clarification. This first prototype cannot enter free text.
+
+### Measured results and rejection
+
+An initial two-case baseline took 9.255 s and 2.768 s. Output generation alone
+took 2.150 s and 2.358 s for 83 and 80 tokens. Prompt processing varied from
+4.157 s to 0.088 s; neither the earlier roughly eight-second smoke check nor
+these two cases establish a fixed per-step latency.
+
+The final comparison ran the same 13 synthetic fixtures once per variant,
+alternating which variant ran first for each fixture. Cases cover distractors,
+duplicate labels, completion, search results, an on-screen instruction attack,
+OCR-only controls, prohibited actions, activation, existing field values,
+missing targets, an exhausted budget and 40 controls. No expected answer was
+sent to inference. Fixtures were not changed in response to model failures.
+
+| Variant | Median of all attempted decisions | Correct fixture outcomes | Median generated tokens |
+|---|---:|---:|---:|
+| Existing local planner | 5.484 s | 6/13 | 85 |
+| Compact candidate rows and choice ID | 2.530 s | 3/13 | 14 |
+
+These latency medians include **incorrect** decisions. Only two fixtures were
+correct for both variants; their paired medians were 3.905 s and 2.579 s, too
+few to establish a reliable speedup. Low-load calls (reported loading under
+500 ms, a heuristic rather than verified cache warmth) had median decoding
+times of 3.177 s and 0.394 s. The selector reduces generated text, but the
+experiment changes instructions, input layout and schema together; it is not
+an isolated output-token ablation. Machine load was not controlled, and one
+repeat of a larger earlier comparison gave different outputs despite the
+fixed sampling seed.
+
+The compact selector was **rejected for production**. It repeatedly treated
+visible text as proof of completion when the task was unfinished. The existing
+planner also chose wrong but available controls, including following an
+on-screen instruction in one case. Schema validity and native target checks
+cannot establish that a selected action actually serves the user's intent.
+The earlier two-step local smoke check showed only that inference worked on
+those simple inputs; it did not establish general desktop-task reliability.
+
+The saved-replay snapshot reduction was implemented separately in
+`src/main/desktop-teaching.mjs`. All 99 desktop-related regression tests passed,
+including the experimental selector's nine validation tests and new saved-replay
+checks for one activation observation, fresh control IDs, cancellation and
+wrong-app rejection. No UI, native capture policy, model choice or installed
+application was changed. The real-window end-to-end latency benefit remains
+unmeasured.
+
+A first, verbose candidate-list prototype was also rejected: expanding every
+control into all compatible key actions raised the 40-control prompt to the
+8,192-token context ceiling and the adapter correctly refused the result.
+Compact rows reduced that case to 3,834 prompt tokens, but still took 17.531 s
+and chose the wrong control. Context construction and decision quality both
+need improvement before a fast general selector is usable.
+
+### Prioritized work
+
+1. **Optimize learned-task replay first.** Existing saved procedures resolve
+   exact unique control matches without a model and can verify a bound expected
+   result without one. Reuse the observation already returned by activation;
+   the immediately following discarded/duplicate observation was unnecessary.
+   Keep the native fresh pre-action and post-action snapshots. The reduction
+   from four to three snapshots per non-activation replay step is a code-level
+   count, not a measured 25% latency improvement.
+2. **Keep a model resident across an active task/session.** The current adapter
+   requests 60-second retention. Longer session-scoped retention could reduce
+   delays after pauses at a memory cost; it cannot remove prompt processing or
+   decoding time. This setting was not changed by the experiment.
+3. **Improve the selector's reliability before shortening it further.** Prefer
+   unambiguous candidate descriptions, bounded relevant context and a separate
+   completion check. A model choosing a short ID is still a text-generating
+   model, not TypeSafe's trained classifier. Preserve fresh observations, independent
+   control checks and explicit handling of free-text entry. Benchmark new
+   untouched tasks before enabling a replacement.
+4. **Measure and improve OCR reuse separately.** Native execution currently
+   clears the OCR band cache at every action. Reusing pixel-identical bands
+   after a fresh capture could save recognition time, but must retain both
+   privacy scans, foreground/window checks and cancellation invalidation. This
+   is a proposal; the cache policy was not changed.
+5. **Compare runtimes only after these changes.** Metal is already in use.
+   Liquid publishes an Apple Silicon MLX format, but no MLX speedup was measured
+   here. It requires separate runtime/weights setup and equivalent schema,
+   cancellation and bounded-context behavior.
+
+Ollama documents the nanosecond timing fields and structured-output parameters
+in its [generate API](https://docs.ollama.com/api/generate), and configurable
+model residency in its [keep-alive documentation](https://docs.ollama.com/faq#how-do-i-keep-a-model-loaded-in-memory-or-make-it-unload-immediately).
+Liquid lists supported formats in its [official model card](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct).
+
+Reproduce the final comparison (a nonzero exit means at least one fixture failed):
+
+```sh
+node --test tests/desktop-choice-experiment.test.mjs
+node scripts/benchmark-desktop-decision.mjs --variants baseline,choice-compact
+```
+
+
+## 2026-09-21 — Work organization evaluation
+
+The work tree currently renders durable parent links; the existing context
+reasoning pass does not maintain those links. Before adding automatic organization,
+`scripts/benchmark-work-organizer.mjs` evaluates the installed local model with a
+separate, tool-free proposal contract. This experiment does not write to the live
+work records or change the selected provider.
+
+The frozen first-pass set in `scripts/fixtures/work-organizer-cases.mjs` contains
+12 cases: four deidentified adaptations of observed work and eight synthetic
+cases. It covers continuation, exact checkpoints, a new task under an outcome,
+a new outcome, child-agent lifecycle, unsupported completion, cancellation,
+retained corrections, ambiguity, duplicate recovery, project boundaries and
+explicit user acceptance. Expected decisions and descriptive test metadata are
+excluded from model input. An additional local snapshot pass asks for grouping
+of existing root records while retaining their children; its coverage score is
+separate from an independent semantic review.
+
+The preregistered smoke-test gate is at least 11/12 correct decisions, no invalid
+outputs or critical failures, and no incomplete calls. Background latency is a
+separate gate at a 10-second median. These thresholds are exploratory, not a
+statistical reliability estimate or authorization for automatic writes. The
+runner retains a timestamped manifest, exact input/prompt/schema hashes, expected
+answers, raw model output, Ollama timing/token telemetry and per-case failures.
+
+Isolated journal checks exercise pending-proposal reload and repeat processing
+without duplicate records/attempts. They do not test production transcript
+capture, an actual process crash, client handoff or UI resurfacing. Deterministic
+validator/replay checks live in `tests/work-organizer-eval.test.mjs`. New-title
+quality and semantic grouping require review beyond the automatic grader.
+
+Run the local-only evaluation into a fresh output folder:
+
+```sh
+node --test tests/work-organizer-eval.test.mjs
+node scripts/benchmark-work-organizer.mjs --output /private/tmp/summon-organizer-run
+```
+
+A private project snapshot can be supplied with `--snapshot` and the observed
+model metadata with `--model-info`. Both are retained in that private output
+folder; personal work snapshots and result files must not be committed. The
+current local adapter uses 8,192 context tokens, a 1,024-token answer limit,
+temperature 0, seed 42 and a 90-second timeout. The runner does not download,
+change or unload models. Other local clients may contend with this run, so
+latency measurements describe the observed workstation rather than isolated
+hardware throughput.
+
+
+**First local run.** LFM2.5-1.2B-Instruct-QAD Q4_0 through Ollama 0.15.6
+returned ten answers and timed out twice. Strict result: **0/12 usable expected
+updates**; **2/12 matched action, target, parent and status** (2/10 returned).
+Those two were duplicate recovery and verified child completion; the latter
+failed only because an attach decision supplied a title. Other answers made
+substantive errors: a specific task was attached to its broad outcome, planned
+work became working, an evidence ID was invented, and a correction was turned
+into extra events. This distinguishes protocol compliance from reasoning.
+
+The full-project snapshot contained nine roots with five existing children.
+The model returned five groups but placed all nine roots in the first group,
+duplicated roots and redistributed existing children among unrelated groups.
+Independent review rejected both structural coverage and semantic grouping.
+The result would add clutter, rather than establish useful outcome hierarchy.
+
+Median observed wall time was 22.6 seconds across all attempts (20.1 seconds for
+the ten returned answers); grouping took 17.0 seconds. Two cases hit 90 seconds.
+Concurrent Ollama requests and heavy swapping were observed, so this is not an
+isolated speed benchmark. The timeouts have unknown semantic outcomes.
+
+The evaluator's 11 regressions passed. All actual model proposals failed the
+validator, so none reached the model-run journal replay step; replay was tested
+only with constructed valid proposals. Automatic capture, live restart/handoff
+and UI resurfacing are not established. Preserve this first run when comparing
+an improved compact operation contract or stronger model. Do not enable
+automatic writes based on this result. Private evidence and the detailed report
+are recorded in the shared evaluation work item; no personal snapshot is
+included in source control.
