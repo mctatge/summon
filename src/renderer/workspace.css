@@ -1,7 +1,7 @@
-/* The approved soft workspace: an off-white desk, generous white panels,
+/* The approved soft workspace: a system-aware desk, generous raised panels,
    and one user-selected accent. Existing tools retain their behavior. */
 ::selection { color: var(--ink); background: var(--accent-soft); }
-::-webkit-scrollbar-thumb { background: #c7cbc5; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar); }
 [hidden] { display: none !important; }
 
 .app-shell { min-height: 520px; background: var(--paper); }
@@ -14,14 +14,14 @@
 .observation-status { font-size: 11px; }
 .status-dot { background: var(--success); }
 .icon-button { border-radius: 50%; }
-.titlebar .icon-button:hover { background: #dedfdb; }
+.titlebar .icon-button:hover { background: var(--paper-hover); }
 .preview-badge { border-radius: 20px; padding: 6px 10px; }
 
 .workspace-frame { display: grid; grid-template-columns: 76px minmax(0, 1fr); flex: 1; min-height: 0; }
 .workspace-rail { display: flex; flex-direction: column; align-items: center; gap: 9px; padding: 22px 10px 20px; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
 .workspace-nav-button { position: relative; display: grid; justify-items: center; align-content: center; gap: 5px; width: 56px; max-width: 100%; min-height: 60px; padding: 10px 2px 8px; flex-shrink: 0; border: 0; border-radius: 18px; background: transparent; color: var(--ink-secondary); font-size: 11px; line-height: 1.3; }
 .workspace-nav-button > svg { width: 19px; height: 19px; stroke-width: 1.65; }
-.workspace-nav-button:hover:not(:disabled) { background: #dedfdb; color: var(--ink); }
+.workspace-nav-button:hover:not(:disabled) { background: var(--paper-hover); color: var(--ink); }
 .workspace-nav-button.is-active, .workspace-nav-button[aria-current='page'] { background: var(--paper-raised); color: var(--accent-ink); }
 .workspace-nav-count { position: absolute; top: 5px; right: 3px; min-width: 17px; height: 17px; padding: 0 4px; display: grid; place-items: center; border-radius: 50%; background: var(--accent); color: var(--on-accent); box-shadow: inset 0 0 0 1px var(--accent-edge); font-size: 11px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .workspace-rail-bottom { margin-top: auto; max-width: 100%; padding-top: 24px; display: grid; justify-items: center; gap: 12px; }
@@ -138,13 +138,13 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .button:hover:not(:disabled) { background: var(--accent-soft); border-color: transparent; }
 .button.primary, .submit-command { color: var(--on-accent); background: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-edge); }
 .button.primary:hover:not(:disabled), .submit-command:hover:not(:disabled) { background: var(--accent-hover); }
-.submit-command:disabled { background: #e0e3dd; color: var(--pencil); box-shadow: none; }
+.submit-command:disabled { background: var(--control-disabled); color: var(--pencil); box-shadow: none; }
 .small-button { font-size: 11px; }
-.toggle { background: #e2e4df; border-color: transparent; }
+.toggle { background: var(--toggle-track); border-color: transparent; }
 .toggle[aria-checked='true'] { background: var(--accent); border-color: var(--control-line); }
 .toggle[aria-checked='true'] > span { background: var(--on-accent); }
-.preferences-dialog, .enrollment-dialog { border: 0; background: var(--paper-raised); border-radius: 30px; box-shadow: 0 24px 100px #17191822; }
-.preferences-dialog::backdrop, .enrollment-dialog::backdrop { background: #17191855; backdrop-filter: blur(4px); }
+.preferences-dialog, .enrollment-dialog { border: 0; background: var(--paper-raised); border-radius: 30px; box-shadow: 0 24px 100px var(--shadow-ink); }
+.preferences-dialog::backdrop, .enrollment-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .preferences-heading { padding-top: 28px; padding-bottom: 20px; }
 .preferences-heading h2 { font-size: 24px; font-weight: 600; letter-spacing: -.8px; }
 .preferences-heading > .icon-button, .enrollment-header > .icon-button { background: var(--paper-inset); }
@@ -157,7 +157,7 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .setup-status { border-radius: 20px; padding: 6px 10px; }
 .setup-status.ready, .permission-state.granted { color: var(--success); }
 .setup-status.ready { background: var(--success-wash); }
-.voice-menu { border-radius: 22px; box-shadow: 0 0 0 1px var(--receipt-line), 0 12px 36px #1719181a; }
+.voice-menu { border-radius: 22px; box-shadow: 0 0 0 1px var(--receipt-line), 0 12px 36px var(--shadow-menu); }
 .voice-menu button { border-radius: 14px; padding: 12px; }
 .knowledge-tabs { border-bottom-color: var(--receipt-line); }
 .knowledge-tabs button { color: var(--ink-secondary); }
@@ -177,7 +177,7 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .wif-rail-count, .wif-chip, .wif-area, .as-group-count, .as-app, .as-branch { border-radius: 8px; }
 .wif-privacy-body { border-radius: 16px; padding: 14px; }
 .wif-agent-chip { font-family: inherit; }
-.as-dialog { --as-row-hover: #f5f5f3; --as-ink-shadow: #17191822; }
+.as-dialog { --as-row-hover: var(--paper-inset); --as-ink-shadow: var(--shadow-ink); }
 .as-filter { border-radius: 18px; padding: 4px; box-shadow: none; }
 .as-segment { border-radius: 15px; min-height: 30px; }
 .as-segment[aria-pressed='true'] { box-shadow: none; }
@@ -186,16 +186,16 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .as-glyph-cell { padding-top: 1px; }
 .as-unread { top: 21px; }
 .as-toast { color: var(--on-accent); background: var(--accent); border-radius: 20px; }
-.as-toast.problem { color: #fff; background: var(--warning); }
-.preferences-dialog.vw-dialog { --vw-muted: var(--ink-secondary); --vw-pot: var(--success); --vw-grid: #17191809; --vw-rail: #c7cbc5; }
+.as-toast.problem { color: var(--on-warning); background: var(--warning); }
+.preferences-dialog.vw-dialog { --vw-muted: var(--ink-secondary); --vw-pot: var(--success); --vw-grid: var(--map-grid); --vw-rail: var(--map-rail); }
 .vw-tab[aria-selected='true'] { background: var(--accent); color: var(--on-accent); }
 .vw-button { border-radius: 18px; }
 .vw-button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--control-line); }
 .vw-button.primary:hover:not(:disabled) { background: var(--accent-hover); }
 .vw-header-actions > .icon-button { background: var(--paper-inset); }
 
-.new-task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; border: 0; border-radius: 30px; background: var(--paper-raised); color: var(--ink); padding: 28px; box-shadow: 0 24px 100px #17191822; }
-.new-task-dialog::backdrop { background: #17191855; backdrop-filter: blur(4px); }
+.new-task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; border: 0; border-radius: 30px; background: var(--paper-raised); color: var(--ink); padding: 28px; box-shadow: 0 24px 100px var(--shadow-ink); }
+.new-task-dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .workspace-dialog-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
 .workspace-dialog-heading .eyebrow { font-size: 11px; letter-spacing: 1px; }
 .workspace-dialog-heading h2 { margin-top: 7px; font-size: 24px; letter-spacing: -.8px; font-weight: 600; }

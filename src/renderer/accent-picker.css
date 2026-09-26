@@ -16,7 +16,7 @@
 .accent-custom summary::-webkit-details-marker { display: none; }
 .accent-custom summary[aria-disabled="true"] { opacity: .45; cursor: default; }
 .accent-custom[open] summary { background: var(--accent-soft); color: var(--accent-ink); }
-.accent-custom-popover { position: absolute; top: calc(100% + 10px); left: 0; z-index: 70; width: 242px; padding: 18px; border: 1px solid var(--receipt-line); border-radius: 18px; background: var(--paper-raised, white); box-shadow: 0 12px 36px rgb(20 22 21 / .12); }
+.accent-custom-popover { position: absolute; top: calc(100% + 10px); left: 0; z-index: 70; width: 242px; padding: 18px; border: 1px solid var(--receipt-line); border-radius: 18px; background: var(--paper-raised, white); box-shadow: 0 12px 36px var(--shadow-menu); }
 .accent-picker.compact .accent-custom-popover { left: auto; right: 0; }
 .accent-custom-popover > label { display: block; font-size: 12px; font-weight: 650; margin-bottom: 12px; }
 .accent-custom-inputs { display: flex; gap: 9px; }
@@ -28,7 +28,7 @@
 .accent-current { margin-left: 8px; color: var(--ink); font-size: 12px; }
 .accent-current > span { margin-left: 5px; color: var(--ink-secondary); font-size: 11px; }
 .accent-picker-error { margin: 8px 0 0; color: var(--error); font-size: 12px; max-width: 300px; }
-.accent-picker.compact .accent-picker-error { position: absolute; z-index: 70; right: 0; width: 250px; padding: 12px; border-radius: 12px; background: var(--paper-raised, white); box-shadow: 0 8px 24px rgb(20 22 21 / .12); }
+.accent-picker.compact .accent-picker-error { position: absolute; z-index: 70; right: 0; width: 250px; padding: 12px; border-radius: 12px; background: var(--paper-raised, white); box-shadow: 0 8px 24px var(--shadow-menu); }
 .accent-announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 900px) { .accent-picker.compact .accent-picker-label { display: none; } }
 @media (max-width: 600px) { .accent-swatch, .accent-custom summary { width: 34px; height: 40px; } .accent-current { flex-basis: 100%; margin: 8px 0 0; } .accent-custom-popover { left: auto; right: 0; } }

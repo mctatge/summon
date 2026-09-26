@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createCompanion } from '../src/core/companion.mjs';
 import { DEFAULT_ACCENT, parseAccentColor } from '../src/core/appearance.mjs';
-import { ACCENT_PRESETS, accentVariables } from '../src/renderer/appearance.ts';
+import { ACCENT_PRESETS, accentVariables, followSystemAppearance } from '../src/renderer/appearance.ts';
 
 async function fixture(t) {
   const homeDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'summon-appearance-')));
@@ -84,13 +84,17 @@ function ratio(a, b) {
   return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
 }
 
-test('accent roles retain user colors while making button labels, text and usage bars readable', () => {
+function colorSamples() {
   const samples = [...ACCENT_PRESETS.map(preset => preset.color), '#ffffff', '#ffff00', '#00ff00', '#77aaff', '#ff00ff', '#757575'];
   // Exercise different luminances and hues across the custom-color space.
   for (let red = 0; red <= 255; red += 51) for (let green = 0; green <= 255; green += 51) for (let blue = 0; blue <= 255; blue += 51) {
     samples.push(`#${[red, green, blue].map(channel => channel.toString(16).padStart(2, '0')).join('')}`);
   }
-  for (const color of samples) {
+  return samples;
+}
+
+test('accent roles retain user colors while making button labels, text and usage bars readable', () => {
+  for (const color of colorSamples()) {
     const vars = accentVariables(color);
     assert.equal(vars['--accent'], color);
     assert.ok(ratio(color, vars['--on-accent']) >= 4.5, `${color} button label`);
@@ -103,9 +107,44 @@ test('accent roles retain user colors while making button labels, text and usage
   }
 });
 
+test('dark accent roles keep custom colors and default graphite readable on every dark surface', () => {
+  assert.equal(accentVariables(DEFAULT_ACCENT, true)['--accent'], '#edf0eb');
+  assert.equal(accentVariables(DEFAULT_ACCENT, true)['--accent-soft'], '#303631');
+  for (const color of colorSamples()) {
+    const vars = accentVariables(color, true);
+    assert.ok(ratio(vars['--accent'], vars['--on-accent']) >= 4.5, `${color} dark button label`);
+    assert.ok(ratio(vars['--accent-hover'], vars['--on-accent']) >= 4.5, `${color} dark hovered button label`);
+    for (const surface of ['#191b1a', '#242725', '#202321', '#2d312e', vars['--accent-soft']]) {
+      assert.ok(ratio(vars['--accent'], surface) >= 3, `${color} dark button on ${surface}`);
+      assert.ok(ratio(vars['--accent-ink'], surface) >= 4.5, `${color} dark text on ${surface}`);
+      assert.ok(ratio(vars['--accent-meter'], surface) >= 3, `${color} dark meter on ${surface}`);
+    }
+  }
+});
+
+test('appearance follows the initial system setting and live changes, then releases its listener', () => {
+  const preference = Object.assign(new EventTarget(), { matches: true });
+  const variables = {};
+  const style = { setProperty: (name, value) => { variables[name] = value; } };
+  const accent = '#32664c';
+  const stop = followSystemAppearance(accent, style, preference);
+  assert.deepEqual(variables, accentVariables(accent, true));
+  preference.matches = false;
+  preference.dispatchEvent(new Event('change'));
+  assert.deepEqual(variables, accentVariables(accent, false));
+  preference.matches = true;
+  preference.dispatchEvent(new Event('change'));
+  assert.deepEqual(variables, accentVariables(accent, true));
+  stop();
+  preference.matches = false;
+  preference.dispatchEvent(new Event('change'));
+  assert.deepEqual(variables, accentVariables(accent, true));
+});
+
 test('renderer defaults and color parsing never emit unchecked CSS', () => {
   assert.deepEqual(accentVariables(), accentVariables(DEFAULT_ACCENT));
   assert.deepEqual(accentVariables('url(https://example.com)'), accentVariables(DEFAULT_ACCENT));
+  assert.deepEqual(accentVariables('url(https://example.com)', true), accentVariables(DEFAULT_ACCENT, true));
   assert.equal(parseAccentColor(' #ABCDEF '), '#abcdef');
   assert.equal(parseAccentColor('#f09'), '#ff0099');
   assert.equal(parseAccentColor('#ffff'), null);
