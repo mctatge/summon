@@ -9,7 +9,7 @@ The command bar handles familiar requests directly: “find my Excel files,” �
 - Recent-file search, Open and Show in Finder, workspace selection, and correcting file context.
 - Read-only integration with an existing Automatic Filing installation's configuration and move journal. Summon records its receipts; it does not move files or change filing rules.
 - Active-app changes, with optional focused-window titles and document paths through macOS Accessibility.
-- A movable desktop microphone button for per-session listening, synchronized with the workbench and menu bar.
+- A menu-bar star that lights green while the microphone is on, with per-session listening controls in its menu.
 - Local voice commands through Whisper, plus an optional dedicated offline “Summon” keyword detector. The microphone starts off.
 - Calendar access and requested AI Stupid Level rankings, with a local one-hour cache.
 - Optional **Ask Claude** and **Ask Codex** buttons for questions requiring reasoning, using installed CLIs and their existing sign-ins.
@@ -61,7 +61,7 @@ The bundle is written under `release/`. Packaging does not install it, register 
 2. Download a file into Downloads or Desktop and follow its receipt in the ledger.
 3. Open **Preferences** for optional window context, microphone/model setup, your calendar URL, exclusions, retention, and an AI Stupid Level data key.
 
-Click the desktop microphone to start listening for “Summon”; click again to stop. Hide stops listening too. Show the control from the menu bar or Preferences. Speech appears in the workbench for review and optional Ask Claude/Codex.
+Choose **Start hands-free listening** from the menu-bar star to listen for “Summon”, and **Stop listening** to turn it off. The star lights green while the microphone is active and returns to monochrome when it is off. Speech appears in the workbench for review and optional Ask Claude/Codex.
 
 **⌘⇧J** opens Summon. **⌘K** focuses the command bar. **⌘⇧Space** toggles a voice command, and so does a plain **Fn** tap once Input Monitoring is allowed for Summon (see [Menu bar and shortcuts](docs/desktop-companion.md#menu-bar-and-shortcuts)). Closing the window leaves the app running in the menu bar; **Quit Summon** stops it.
 

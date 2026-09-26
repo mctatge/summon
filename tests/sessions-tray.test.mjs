@@ -71,7 +71,7 @@ async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
     readFile:missing,writeFile:noop,mkdir:noop,stat:missing,access:missing,chmod:noop,lstat:async()=>({isDirectory:()=>true}),
     createWorkInFlight:async()=>({read:async()=>({}),group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
     createAgentSessions:async()=>core,sessionSummaryText,
-    createDesktopVoice:()=>({publish:noop,updateVoice:noop,start:async()=>{},show:noop,stop:async()=>{},close:async()=>{}}),
+    createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,
     createCompanion:async()=>service,classifyCommand:noop,createCommandSession:()=>({}),

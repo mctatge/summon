@@ -348,7 +348,7 @@ async function startMain({ createWorkInFlight }) {
     app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop },
     createWorkInFlight, runGrouping: async (...args) => { ctx.groupingCall = args; return { raw: {}, model: null }; }, GIT_ENV: { GIT_OPTIONAL_LOCKS: '0' },
     createAgentSessions: async () => ({ read: async () => { ctx.sessionReads++; return {}; }, placeCounts: () => { ctx.placeCountCalls++; return ctx.placeCounts; }, openTarget: () => assert.fail('No session is opened by Work in flight.'), settings: () => ({}), updateSettings: async () => ({}), close: async () => {} }), clipboard: { writeText: () => assert.fail('Nothing is copied by Work in flight.') },
-    createDesktopVoice: () => ({ publish: noop, updateVoice: noop, start: async () => {}, show: noop, stop: async () => {}, close: async () => {} }),
+    createDesktopVoice: () => ({ publish: noop, updateVoice: noop, snapshot: () => ({state:'off',mode:'off',micActive:false}), toggle: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     shell: { openPath: async file => { opened.push(file); return ''; }, showItemInFolder: file => { shown.push(file); } },

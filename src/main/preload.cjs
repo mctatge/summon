@@ -12,5 +12,5 @@ contextBridge.exposeInMainWorld('summon',{
   visualRepository:invoke('visual-repository'),saveVisualGoal:invoke('visual-goal-save'),
   agentSessions:invoke('agent-sessions'),agentSessionTrace:invoke('agent-session-trace'),openAgentSession:invoke('agent-session-open'),agentSessionsSettings:invoke('agent-sessions-settings'),onOpenPanel:subscribe('summon:open-panel'),launchAgent:invoke('agent-launch'),installClaudeHooks:invoke('claude-hooks-install'),claudeHooksStatus:invoke('claude-hooks-status'),
   usage:invoke('usage'),usageSettings:invoke('usage-settings'),
-  voiceState:invoke('voice-state'),showWindow:invoke('show-window'),showVoiceWidget:invoke('show-voice-widget'),onVoiceMode:subscribe('summon:voice-mode'),onUpdate:subscribe('summon:update'),onVoiceToggle:subscribe('summon:voice-toggle'),onEnrollSpeaker:subscribe('summon:enroll-speaker')
+  voiceState:invoke('voice-state'),showWindow:invoke('show-window'),onVoiceMode:subscribe('summon:voice-mode'),onUpdate:subscribe('summon:update'),onVoiceToggle:subscribe('summon:voice-toggle'),onEnrollSpeaker:subscribe('summon:enroll-speaker')
 });

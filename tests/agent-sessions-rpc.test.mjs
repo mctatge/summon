@@ -258,7 +258,7 @@ async function startMain({ createAgentSessions, createWorkInFlight, createVisual
     app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop },
     createWorkInFlight, runGrouping: async () => ({ raw: {}, model: null }), GIT_ENV: {},
     createAgentSessions, createVisualWorkspace, clipboard: { writeText: text => { copied.push(text); } },
-    createDesktopVoice: () => ({ publish: noop, updateVoice: noop, start: async () => {}, show: noop, stop: async () => {}, close: async () => {} }),
+    createDesktopVoice: () => ({ publish: noop, updateVoice: noop, snapshot: () => ({state:'off',mode:'off',micActive:false}), toggle: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
     shell: { openPath: async file => { opened.push(file); return ''; }, openExternal: async url => { external.push(url); }, showItemInFolder: file => { shown.push(file); } },

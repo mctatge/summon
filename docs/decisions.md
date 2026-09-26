@@ -1132,6 +1132,12 @@ This expands capture scope only through the session-specific **Read screen text 
 
 The trusted-window desktop controls disclose reasoning and capture choices before a task starts. They cannot change while a task or proposal is active. Terminal, credential, security and consequential-control exclusions, fresh native revalidation and evidence-based completion remain. The restricted Ask allowed-tools boundary and RPC/MCP desktop-action boundary are unchanged. This does not install a local model, grant OS access automatically, claim general canvas support or inherit TypeSafe's published performance.
 
+## 2026-09-21 — Listening status belongs in the menu-bar star
+
+The owner requested removing the always-on-top listening widget because the menu-bar star is sufficient. Remove the widget window, renderer, preload, IPC controls and position persistence. The star is green strictly while the capture owner reports `micActive: true`, and monochrome otherwise; requested listening, startup, transcription and processing states alone never light it. The menu retains **Start hands-free listening**, **Stop listening** and **Voice command**, with detailed voice status in the workbench.
+
+The workbench renderer remains the sole microphone capture owner, including while its window is hidden. Existing command, wake-word, shortcut and enrollment flows remain. Listening starts off, and shutdown, sleep, lock and capture-owner loss still stop capture and discard unfinished input. Removing the widget adds no recording, background listening preference, provider access or execution authority.
+
 ## 2026-09-21 — Explicit agent checkpoints before automatic organization
 
 The owner authorized the first step of the work-organizer plan: have the agent doing the work save its task identity, findings, evidence and remaining step. Add `checkpoint_work_item` to the local MCP/RPC boundary as a narrow append operation over the existing `visual-goals.json` store. It accepts an existing owned record, the reporting session and latest revision, a unique checkpoint ID, summary, evidence reference and next step, plus bounded new findings and an optional reported status/completion. It preserves earlier findings and evidence, including content withheld from the agent, and cannot create, claim, rename or reparent work. Settled records require a separate explicit decision to resume. Completion remains user-confirmed only.

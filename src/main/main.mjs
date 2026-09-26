@@ -1,4 +1,4 @@
-import {app,BrowserWindow,ipcMain,Tray,Menu,nativeImage,shell,dialog,globalShortcut,session,systemPreferences,safeStorage,screen,powerMonitor} from 'electron';
+import {app,BrowserWindow,ipcMain,Tray,Menu,nativeImage,shell,dialog,globalShortcut,session,systemPreferences,safeStorage,powerMonitor} from 'electron';
 import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,stat,access,chmod} from 'node:fs/promises';
 import {homedir} from 'node:os';
@@ -35,7 +35,7 @@ import {run,scrubbedEnv,executable,stopProcesses,spawnLongLived} from './process
 process.umask(0o077);app.setName('Summon');
 if(process.env.SUMMON_DATA_DIR)app.setPath('userData',process.env.SUMMON_DATA_DIR);
 const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
-  let window,tray,voiceControl,service,native,closeRpc,knowledge,commands,localModel,wake,speaker,fnKey,transcriber,quitting=false,benchmarkData,benchmark,voiceBusy=false,engineBusy=false,keyConfigured=false;
+  let window,tray,trayIcons,voiceControl,service,native,closeRpc,knowledge,commands,localModel,wake,speaker,fnKey,transcriber,quitting=false,benchmarkData,benchmark,voiceBusy=false,engineBusy=false,keyConfigured=false;
   let transcriptionEngaged=false;
   let nativeGeneration=0,nativeSignature='',nativeBuffer='',shutdownComplete=false;
   let workInFlight;
@@ -125,8 +125,9 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     window.webContents.on('will-navigate',event=>event.preventDefault());
     session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details)=>callback(contents===window.webContents&&details.isMainFrame===true&&permission==='media'&&details.mediaTypes?.length===1&&details.mediaTypes[0]==='audio'));
     session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details)=>contents===window.webContents&&details.isMainFrame===true&&permission==='media'&&details.mediaType==='audio');
-    voiceControl=createDesktopVoice({app,BrowserWindow,ipcMain,screen,powerMonitor,mainWindow:window,root,dataDir,onStateChange:value=>{
-      const active=value.micActive===true;tray?.setTitle(active?'●':'');tray?.setToolTip(active?'Summon · microphone listening locally':'Summon · your working context');
+    voiceControl=createDesktopVoice({powerMonitor,mainWindow:window,onStateChange:value=>{
+      const active=value.micActive===true;
+      if(tray){tray.setImage(active?trayIcons.listening:trayIcons.off);tray.setToolTip(active?'Summon · microphone listening locally':'Summon · microphone off');refreshTrayMenu();}
       // Load in parallel with microphone startup, then reuse the same model for
       // the listening session. A dormant app does not reserve Whisper memory.
       const engaged=value.mode!=='off';
@@ -138,7 +139,6 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     },getHealth:()=>({wake:wake.status().available&&wake.status().loaded,whisper:service.snapshot().health.whisper})});
     handle('snapshot',snapshot);
     handle('show-window',revealWindow);
-    handle('show-voice-widget',()=>voiceControl.show());
     commands=createCommandSession({service,knowledge,openCalendar,openBenchmark:()=>openLink('benchmark'),fetchBenchmark:benchmark,openFile});
     // Work in flight: read-only git status; grouping runs only on an explicit request (panel, CLI or agent tool).
     const sendWorkInFlight=()=>{if(!quitting&&workInFlight)workInFlight.read({maxAgeMs:60000}).then(view=>{if(!quitting&&window&&!window.isDestroyed())window.webContents.send('summon:work-in-flight',view);}).catch(()=>{});};
@@ -297,12 +297,18 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     // Auto asks the CLI with the most subscription quota left (engine-choice.mjs); a named engine is used as asked.
     handle('ask',async(engine,text)=>{if(engineBusy)throw new Error('An answer is already running.');engineBusy=true;try{const choice=engine==='auto'?pickEngine({engine:'auto'}):{engine,reason:'pinned'};const knowledgeContext=await searchKnowledge(text.slice(0,500),{projectId:service.snapshot().currentProjectId,limit:5});const answer=await askEngine(choice.engine,text,{...snapshot(),knowledgeContext});return {...answer,engine:choice.engine,reason:choice.reason};}finally{engineBusy=false;}});
     const pixels=Buffer.alloc(22*22*4);for(let y=0;y<22;y++)for(let x=0;x<22;x++){const dx=Math.abs(x-10.5),dy=Math.abs(y-10.5);if((dx+dy*0.4<4.5||dy+dx*0.4<4.5)&&dx*dx+dy*dy>5&&dx+dy<11)pixels[(y*22+x)*4+3]=255;}
-    const icon=nativeImage.createFromBitmap(pixels,{width:22,height:22});icon.setTemplateImage(true);tray=new Tray(icon);tray.setToolTip('Summon · your working context');tray.on('click',revealWindow);
+    const icon=nativeImage.createFromBitmap(pixels,{width:22,height:22});icon.setTemplateImage(true);
+    // A non-template green star stays lit in either macOS appearance while the
+    // capture owner reports an active microphone. Idle uses the system tint.
+    const listeningPixels=Buffer.from(pixels);
+    for(let i=0;i<listeningPixels.length;i+=4)if(listeningPixels[i+3]){listeningPixels[i]=110;listeningPixels[i+1]=184;listeningPixels[i+2]=52;}
+    const listeningIcon=nativeImage.createFromBitmap(listeningPixels,{width:22,height:22});listeningIcon.setTemplateImage(false);
+    trayIcons={off:icon,listening:listeningIcon};tray=new Tray(icon);tray.setToolTip('Summon · microphone off');tray.on('click',revealWindow);
     // Usage rows are read-only labels from the meter's last reading ('Claude 5h 27% · 7d 18%'); Refresh usage asks both CLIs again.
     const usageRows=()=>{const view=usage?.status();if(!view)return [];return [...['claude','codex'].map(provider=>({label:usageText(view.providers[provider],{name:provider==='claude'?'Claude':'Codex',ids:['five_hour','seven_day']}),enabled:false})),{label:'Refresh usage',click:()=>{usage.refresh().catch(()=>{});}},{type:'separator'}];};
-    refreshTrayMenu=()=>{if(quitting||!tray)return;tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Summon',click:revealWindow},{label:'Show desktop voice button',click:()=>voiceControl.show()},{label:'Stop listening',click:()=>voiceControl.stop()},{label:'Voice command',click:()=>{revealWindow();window.webContents.send('summon:voice-toggle');}},{label:'Enroll my voice',click:()=>{revealWindow();window.webContents.send('summon:enroll-speaker');}},{type:'separator'},...usageRows(),{label:'Quit Summon',click:()=>app.quit()}]));};
+    refreshTrayMenu=()=>{if(quitting||!tray)return;tray.setContextMenu(Menu.buildFromTemplate([{label:'Open Summon',click:revealWindow},{label:'Start hands-free listening',enabled:voiceControl.snapshot().mode==='off'&&!voiceControl.snapshot().micActive,click:()=>{if(voiceControl.snapshot().available)voiceControl.toggle();else{revealWindow();window.webContents.send('summon:voice-mode','handsfree');}}},{label:'Stop listening',enabled:voiceControl.snapshot().mode!=='off'||voiceControl.snapshot().micActive,click:()=>voiceControl.stop()},{label:'Voice command',click:()=>{revealWindow();window.webContents.send('summon:voice-toggle');}},{label:'Enroll my voice',click:()=>{revealWindow();window.webContents.send('summon:enroll-speaker');}},{type:'separator'},...usageRows(),{label:'Quit Summon',click:()=>app.quit()}]));};
     refreshTrayMenu();
-    Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Summon',submenu:[{role:'about'},{role:'hide'},{type:'separator'},{role:'quit'}]},{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Voice',submenu:[{label:'Voice command',click:()=>{revealWindow();window.webContents.send('summon:voice-toggle');}},{label:'Start hands-free listening',click:()=>{revealWindow();window.webContents.send('summon:voice-mode','handsfree');}},{type:'separator'},{label:'Enroll my voice',click:()=>{revealWindow();voiceControl.start().then(()=>voiceControl.show()).catch(()=>{});window.webContents.send('summon:enroll-speaker');}}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{label:'Show Summon',click:revealWindow}]}]));
+    Menu.setApplicationMenu(Menu.buildFromTemplate([{label:'Summon',submenu:[{role:'about'},{role:'hide'},{type:'separator'},{role:'quit'}]},{label:'Edit',submenu:[{role:'undo'},{role:'redo'},{type:'separator'},{role:'cut'},{role:'copy'},{role:'paste'},{role:'selectAll'}]},{label:'Voice',submenu:[{label:'Voice command',click:()=>{revealWindow();window.webContents.send('summon:voice-toggle');}},{label:'Start hands-free listening',click:()=>{revealWindow();window.webContents.send('summon:voice-mode','handsfree');}},{type:'separator'},{label:'Enroll my voice',click:()=>{revealWindow();window.webContents.send('summon:enroll-speaker');}}]},{label:'Window',submenu:[{role:'minimize'},{role:'zoom'},{label:'Show Summon',click:revealWindow}]}]));
     if(!globalShortcut.register('CommandOrControl+Shift+Space',()=>{revealWindow();window.webContents.send('summon:voice-toggle');}))service.setHealth({errors:['The voice shortcut is in use by another app. Use Summon’s microphone button.']});
     globalShortcut.register('CommandOrControl+Shift+J',revealWindow);
     // A hook event has just changed a session's state: re-arm the menu-bar count once, a second after the first of a burst.
@@ -311,7 +317,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     const onHook=()=>{if(hookTimer||quitting)return;hookTimer=setTimeout(()=>{hookTimer=undefined;if(!quitting&&trayCount()!=='off')scheduleStatus(0);},1000);hookTimer.unref?.();};
     try{closeRpc=await createRpcServer(service,!app.isPackaged?process.env.SUMMON_SOCKET:undefined,{knowledge,searchKnowledge,onChange:push,workInFlight,agentSessions,onHook,usage,pickEngine});}catch(error){service.setHealth({errors:[`Shared context connection: ${error.message}`]});}
     if(!app.isPackaged&&process.env.SUMMON_DEV_URL==='http://127.0.0.1:5179')await window.loadURL(process.env.SUMMON_DEV_URL);else await window.loadFile(path.join(root,'dist/index.html'));
-    window.show();voiceControl.start().catch(error=>service.setHealth({errors:[`Desktop voice control: ${error.message}`]}));
+    window.show();
     refreshKnowledge().then(push).catch(error=>console.error('Memory sources:',error.message));
     wake.start().then(push).catch(error=>{console.error('Wake detector:',error.message);push();});
     speaker.start().then(push).catch(error=>{console.error('Speaker verification:',error.message);push();});

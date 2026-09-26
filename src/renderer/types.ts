@@ -7,14 +7,6 @@ export type Snapshot = { version: 1; usage?: UsageView; projects: Project[]; cur
 export type CommandResult = { kind: 'files' | 'context' | 'message' | 'benchmark' | 'unknown'; message: string; routineReceiptId?: string; completedCommand?: string; routineName?: string; failed?: boolean; warning?: string; fileIds?: string[]; projectId?: string | null };
 export type VoiceMode = 'off' | 'command' | 'handsfree';
 export type VoiceStatus = { state: string; mode: VoiceMode; micActive: boolean; text?: string; enrollment?: { count: number; total: number; phase: 'listening' | 'hearing' | 'captured' | 'done' } };
-export type VoiceWidgetSnapshot = Omit<VoiceStatus, 'text'> & { available: boolean; error?: string };
-export type SummonWidgetBridge = {
-  snapshot(): Promise<VoiceWidgetSnapshot>;
-  toggleListening(): Promise<void>;
-  openSummon(): Promise<void>;
-  hide(): Promise<void>;
-  onUpdate(callback: (snapshot: VoiceWidgetSnapshot) => void): () => void;
-};
 export type SettingsPatch = Partial<Settings> & { benchmarkApiKey?: string };
 export type SummonBridge = {
   detectWake(audio: ArrayBuffer): Promise<{detected:boolean;keyword?:string;elapsedMs:number}>;
@@ -53,7 +45,6 @@ export type SummonBridge = {
   onEnrollSpeaker(callback: () => void): () => void;
   voiceState(status: VoiceStatus): Promise<void>;
   showWindow(): Promise<void>;
-  showVoiceWidget(): Promise<void>;
   workInFlight(options?: { refresh?: boolean }): Promise<WorkInFlight>;
   groupWork(repoId: string | null, options?: { force?: boolean; reason?: 'panel' | 'open' }): Promise<WifJob>;
   workInFlightSettings(patch: Partial<WifSettings>): Promise<WorkInFlight>;
@@ -90,7 +81,7 @@ export type ClaudeHooksStatus = { claude: { installed: boolean; current: boolean
 export type SummonPanel = 'agent-sessions';
 
 declare global {
-  interface Window { summon?: SummonBridge; summonWidget?: SummonWidgetBridge }
+  interface Window { summon?: SummonBridge }
 }
 
 export type MemoryHit={id:string;kind:'explicit'|'retrieved';text:string;projectId:string|null;source:{label:string;path?:string;line?:number;modifiedAt?:string};score:number};

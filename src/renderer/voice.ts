@@ -14,8 +14,8 @@ export function encodeWav(chunks: Float32Array[], sampleRate: number): ArrayBuff
   return buffer;
 }
 
-// The workbench owns the only capture controller. The desktop widget only
-// requests modes through main; importing this module does not open a mic.
+// The workbench owns the only capture controller. Menu-bar controls request
+// modes through main; importing this module does not open a mic.
 export function installVoiceController(): () => void {
   const bridge = window.summon;
   if (!bridge) return () => {};

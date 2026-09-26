@@ -17,8 +17,9 @@ test('native startup survives a failed file scan and quit waits for request clea
   const handlers=new Map(),shortcuts=new Map(),sent=[];const fnMonitors=[];let fnStarts=0,fnStops=0;
   let trayCreations=0,trayMenu,wakeStarts=0,permissionRequest,permissionCheck;
   const launches=[];
-  const warmCalls=[],transcriptionCalls=[];
-  let trayDestroys=0,stopCalls=0,finalQuits=0,cleanupStarted=false,cleanupFinished=false,bundledLoads=0,nativeKills=0,voiceStarts=0,voiceCloses=0,voiceAcknowledgments=0,transcriberCloses=0;
+  const warmCalls=[],transcriptionCalls=[],trayImages=[];
+  let currentVoiceStatus={state:'off',mode:'off',micActive:false};
+  let trayDestroys=0,stopCalls=0,finalQuits=0,cleanupStarted=false,cleanupFinished=false,bundledLoads=0,nativeKills=0,voiceCloses=0,voiceAcknowledgments=0,transcriberCloses=0;
   const app=new EventEmitter();
   Object.assign(app,{isPackaged:true,dock:{hide(){assert.fail('Summon keeps its Dock icon; there is no hidden mode.');}},setName(){},requestSingleInstanceLock:()=>true,getPath:()=>'/private/tmp/synthetic-summon-data',whenReady:()=>Promise.resolve(),quit(){const event={cancelled:false,preventDefault(){this.cancelled=true;}};app.emit('before-quit',event);if(!event.cancelled)finalQuits++;}});
   class Window extends EventEmitter{
@@ -29,7 +30,7 @@ test('native startup survives a failed file scan and quit waits for request clea
     show(){showWindow();}
     focus(){}
   }
-  class Tray extends EventEmitter{constructor(){super();trayCreations++;}setToolTip(){}setContextMenu(menu){trayMenu=menu;}setTitle(){}popUpContextMenu(){}destroy(){trayDestroys++;}}
+  class Tray extends EventEmitter{constructor(){super();trayCreations++;}setToolTip(){}setContextMenu(menu){trayMenu=menu;}setTitle(){}setImage(image){trayImages.push(image);}popUpContextMenu(){}destroy(){trayDestroys++;}}
   const state={settings:{paused:false,activityEnabled:true,accessibilityEnabled:false,excludedApps:[],whisperModel:'/private/tmp/synthetic-model.bin'},health:{whisper:false},projects:[],files:[],events:[]};
   const service={snapshot:()=>state,setHealth(){},start:()=>scan,stop:async()=>{stopCalls++;}};
   const noop=()=>{};
@@ -41,9 +42,9 @@ test('native startup survives a failed file scan and quit waits for request clea
   const source=(await readFile(sourceURL,'utf8')).replace(/^import .*;\n/gm,'').replaceAll('import.meta.url',JSON.stringify(sourceURL.href));
   vm.runInNewContext(source,{
     app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu:noop},screen:{},powerMonitor:{on:noop},
-    createDesktopVoice:options=>{assert.equal(options.mainWindow,windowInstance);assert.equal(typeof options.onStateChange,'function');return {publish:noop,updateVoice:value=>{voiceAcknowledgments++;options.onStateChange(value);},start:async()=>{voiceStarts++;},show:noop,stop:async()=>{},close:async()=>{voiceCloses++;}};},
+    createDesktopVoice:options=>{assert.equal(options.mainWindow,windowInstance);assert.equal(typeof options.onStateChange,'function');return {publish:noop,updateVoice:value=>{voiceAcknowledgments++;currentVoiceStatus=value;options.onStateChange(value);},snapshot:()=>currentVoiceStatus,toggle:noop,stop:async()=>{},close:async()=>{voiceCloses++;}};},
     createTranscriber:options=>{assert.equal(options.workerPath,'/private/tmp/synthetic-resources/summon-transcribe');return {status:()=>({ready:false}),warm:model=>{warmCalls.push(model);return warming;},transcribe:async(audio,model)=>{transcriptionCalls.push({audio,model});return {text:'Synthetic phrase'};},release:async()=>{},close:async()=>{transcriberCloses++;finishWarm();await transcriberCleanup;}};},
-    nativeImage:{createFromBitmap:()=>({setTemplateImage:noop}),createEmpty:()=>({})},
+    nativeImage:{createFromBitmap:pixels=>({pixels,setTemplateImage(value){this.template=value;}}),createEmpty:()=>({})},
     ipcMain:{handle:(name,handler)=>handlers.set(name,handler)},shell:{},dialog:{showErrorBox:(_title,message)=>assert.fail(message)},
     globalShortcut:{register:(key,callback)=>{shortcuts.set(key,callback);return true;},unregisterAll:()=>shortcuts.clear()},
     session:{defaultSession:{setPermissionRequestHandler(fn){permissionRequest=fn;},setPermissionCheckHandler(fn){permissionCheck=fn;}}},
@@ -70,7 +71,7 @@ test('native startup survives a failed file scan and quit waits for request clea
   // Everything a leftover assistant-entry.json once gated now runs unconditionally: window, tray, shortcuts, wake, voice.
   assert.equal(wakeStarts,1,'The wake detector starts at launch.');
   assert.equal(trayCreations,1,'Summon owns its one menu-bar icon.');
-  assert.deepEqual(Array.from(trayMenu,item=>item.label).filter(Boolean),['Open Summon','Show desktop voice button','Stop listening','Voice command','Enroll my voice','Refresh usage','Quit Summon']);
+  assert.deepEqual(Array.from(trayMenu,item=>item.label).filter(Boolean),['Open Summon','Start hands-free listening','Stop listening','Voice command','Enroll my voice','Refresh usage','Quit Summon']);
   assert.deepEqual([...shortcuts.keys()].sort(),['CommandOrControl+Shift+J','CommandOrControl+Shift+Space']);
   shortcuts.get('CommandOrControl+Shift+Space')();assert.deepEqual(sent.filter(channel=>channel==='summon:voice-toggle'),['summon:voice-toggle'],'⌘⇧Space toggles Summon’s own voice command.');
   // Microphone permission: the main window’s main frame, audio only; every other frame, window, kind or mix is refused.
@@ -95,6 +96,12 @@ test('native startup survives a failed file scan and quit waits for request clea
   assert.equal(voiceStatusCompleted,true,'Loading Whisper must not block microphone status acknowledgments.');
   await voiceStatus;
   assert.deepEqual(warmCalls,[state.settings.whisperModel]);
+  assert.equal(trayImages.at(-1).template,true,'Starting alone does not light the star before capture is active.');
+  await handlers.get('summon:voice-state')(requestEvent,{state:'listening',mode:'handsfree',micActive:true});
+  assert.equal(trayImages.at(-1).template,false,'Active capture lights the star with its own color.');
+  assert.ok(trayImages.at(-1).pixels.some((value,index)=>index%4!==3&&value>0));
+  assert.equal(trayMenu.find(item=>item.label==='Start hands-free listening').enabled,false);
+  assert.equal(trayMenu.find(item=>item.label==='Stop listening').enabled,true);
   const audio=new Uint8Array([1,2,3]);
   const transcript=await handlers.get('summon:transcribe')(requestEvent,audio);
   assert.equal(transcript.text,'Synthetic phrase');assert.equal(transcriptionCalls.length,1);
@@ -108,10 +115,11 @@ test('native startup survives a failed file scan and quit waits for request clea
   assert.equal(finalQuits,0,'The app must await the request’s temporary-file cleanup.');
   await assert.rejects(handlers.get('summon:ask')(requestEvent,'codex','Another request'),/shutting down/);
   await handlers.get('summon:voice-state')(requestEvent,{state:'off',mode:'off',micActive:false});
-  assert.equal(voiceAcknowledgments,2,'A trusted capture owner can acknowledge microphone release during shutdown.');
+  assert.equal(voiceAcknowledgments,3,'A trusted capture owner can acknowledge microphone release during shutdown.');
   await handlers.get('summon:voice-state')(requestEvent,{state:'starting',mode:'handsfree',micActive:false});
   assert.equal(warmCalls.length,1,'A late renderer status must not launch a transcription worker during shutdown.');
   await assert.rejects(handlers.get('summon:voice-state')({sender:{},senderFrame:{}},{state:'off',mode:'off',micActive:false}),/Untrusted/);
+  assert.equal(trayImages.at(-1).template,true,'Released capture restores the monochrome star.');
   finishCleanup();
   await request;
   await new Promise(resolve=>setImmediate(resolve));
@@ -122,8 +130,8 @@ test('native startup survives a failed file scan and quit waits for request clea
   assert.equal(finalQuits,1);
   assert.equal(bundledLoads,1);
   assert.equal(windowInstance.options.webPreferences.backgroundThrottling,false,'The capture owner keeps processing while the workbench is hidden.');
-  assert.equal(voiceStarts,1);
-  assert.equal(voiceCloses,1,'Shutdown closes the desktop widget and its capture owner once.');
+  assert.equal(handlers.has('summon:show-voice-widget'),false);
+  assert.equal(voiceCloses,1,'Shutdown closes the voice controller once.');
   assert.equal(fnStops,1,'Shutdown stops the Fn shortcut helper.');
   assert.equal(stopCalls,1);
   assert.equal(launches.length,1,'No extra activity monitor starts during shutdown.');

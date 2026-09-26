@@ -120,7 +120,7 @@ async function launch(){
     createWorkInFlight:async()=>({read:async()=>({}),group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
     createAgentSessions:async()=>({read:async()=>({}),openTarget:async()=>assert.fail('No session is opened.'),settings:()=>({}),updateSettings:async()=>({}),close:async()=>{}}),sessionSummaryText:()=>'',
     createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
-    createDesktopVoice:()=>({publish:noop,updateVoice:noop,start:async()=>{},show:noop,stop:async()=>{},close:async()=>{}}),
+    createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,
     createCompanion:async()=>service,classifyCommand:noop,createCommandSession:()=>({}),createKnowledge:async()=>({snapshot:()=>({}),refreshSources:async()=>{},search:async()=>[]}),
@@ -181,7 +181,7 @@ test('main wires the meter into startup, power events, IPC, Ask Auto, the tray m
   // The standard tray menu carries two read-only rows and Refresh usage, rebuilt when the meter changes.
   const tray=ctx.trays.find(item=>item.image?.star===true);
   const labels=menu=>plain(menu.map(item=>item.label??item.type));
-  assert.deepEqual(labels(tray.menus.at(-1)),['Open Summon','Show desktop voice button','Stop listening','Voice command','Enroll my voice','separator','Claude · no usage yet','Codex · no usage yet','Refresh usage','separator','Quit Summon']);
+  assert.deepEqual(labels(tray.menus.at(-1)),['Open Summon','Start hands-free listening','Stop listening','Voice command','Enroll my voice','separator','Claude · no usage yet','Codex · no usage yet','Refresh usage','separator','Quit Summon']);
   assert.ok(tray.menus.at(-1).filter(item=>/no usage yet/.test(item.label)).every(item=>item.enabled===false),'usage rows are labels, not actions');
   ctx.core.providers={claude:{provider:'claude',plan:'max',status:'ok',windows:[{id:'five_hour',label:'5h',usedPercent:27.3},{id:'seven_day',label:'7d',usedPercent:18},{id:'seven_day_opus',label:'7d Opus',usedPercent:3}],fetchedAt:new Date(T0).toISOString()},codex:{provider:'codex',status:'not_signed_in',windows:[],fetchedAt:new Date(T0).toISOString()}};
   const menusBefore=tray.menus.length;
