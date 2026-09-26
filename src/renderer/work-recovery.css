@@ -1,0 +1,25 @@
+.work-recovery { margin:24px 8px 0; padding-top:20px; border-top:1px solid var(--receipt-line); min-width:0; font-size:12px; }
+.work-recovery-header { display:flex; flex-wrap:wrap; align-items:center; gap:12px; margin-bottom:8px; }
+.work-recovery-header h2 { margin:0; font-size:14px; font-weight:550; color:var(--ink); }
+.work-recovery-header > button { margin-left:auto; }
+.work-recovery-count { color:var(--ink-secondary); font-variant-numeric:tabular-nums; }
+.work-recovery-help, .work-recovery-empty { margin:7px 0; color:var(--ink-secondary); line-height:1.6; }
+.work-recovery-toggle, .work-recovery-tools label { display:flex; align-items:center; gap:8px; line-height:1.5; }
+.work-recovery-toggle { margin-top:14px; color:var(--ink); }
+.work-recovery input { accent-color:var(--petrol); flex-shrink:0; }
+.work-recovery-warning, .work-recovery-warnings { margin:10px 0; color:var(--warning); line-height:1.6; }
+.work-recovery-warnings { padding-left:20px; }
+.work-recovery-tools { display:flex; flex-wrap:wrap; align-items:center; gap:12px; color:var(--ink-secondary); margin:12px 0; font-size:11px; }
+.work-recovery-tools > span { margin-right:auto; }
+.work-recovery-items { margin:0; padding:0; list-style:none; border-top:1px solid var(--receipt-line-soft); }
+.work-recovery-items > li { border-bottom:1px solid var(--receipt-line-soft); }
+.work-recovery-items summary { padding:12px 0; cursor:pointer; color:var(--ink-secondary); }
+.work-recovery-items summary::marker { font-size:10px; }
+.work-recovery-source { font-size:11px; line-height:1.6; }
+.work-recovery-preview { display:block; color:var(--ink); margin:5px 0 0 14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.work-recovery-body { padding:0 0 12px 14px; }
+.work-recovery-text { margin:2px 0 12px; white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; max-height:340px; overflow-y:auto; }
+.work-recovery-session { margin:8px 0; color:var(--ink-secondary); font-size:10px; overflow-wrap:anywhere; }
+.work-recovery-pages { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--ink-secondary); font-size:11px; padding-top:8px; }
+.work-recovery input:focus-visible, .work-recovery summary:focus-visible { outline:2px solid var(--petrol); outline-offset:4px; }
+@media (max-width:600px) { .work-recovery-tools > span { flex-basis:100%; } .work-recovery-header { gap:8px; } }

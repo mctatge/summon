@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { sealedPath } from '../workstreams.mjs';
+import { recentContext, CONTEXT_LINE_BYTES } from './recent-context.mjs';
 
 /**
  * Codex sessions: read-only metadata about ChatGPT.app Codex threads and `codex` CLI runs.
@@ -10,7 +11,7 @@ import { sealedPath } from '../workstreams.mjs';
  * "loaded" from thread-writer-locks; "working" from turn lifecycle events near the end of each rollout.
  * Which files a thread edited comes from the same tail: the keys of a completed FileChange item's `changes` map,
  * read as bytes so the patch text beside them is never turned into a string.
- * Never selects or keeps title, preview or first_user_message, never parses message lines, never reads prompt, draft or
+ * Never selects or keeps title, preview or first_user_message, reads bounded recent user/assistant text only, never reads prompt, draft or
  * description keys, never writes to ~/.codex, never talks to a Codex process.
  */
 
@@ -44,6 +45,7 @@ const SECRET_BASE = /^(?:\.env(?:\..*)?|\.envrc|\.netrc|\.npmrc|\.pgpass|\.pypir
 const SECRET_EXT = /\.(?:pem|key|p12|pfx|keychain|keystore|jks|kdbx|env|tfvars|p8|ppk)$/i;
 // Never selected: title, preview, first_user_message (they hold the first prompt).
 const THREAD_COLUMNS = ['id', 'rollout_path', 'source', 'cwd', 'name', 'created_at_ms', 'created_at', 'updated_at_ms', 'updated_at', 'recency_at_ms', 'archived', 'is_pinned', 'thread_source', 'model', 'git_branch'];
+const CHILD_COLUMNS = [...THREAD_COLUMNS, 'agent_nickname', 'agent_path'];
 const REQUIRED_COLUMNS = ['id', 'rollout_path', 'source'];
 const HIDDEN_SOURCES = ['subagent', 'guardian_review'];
 // Table layouts come from the stored CREATE text (pragma functions are not allowed on snapshots).
@@ -260,9 +262,9 @@ function changedPaths(buffer, from, to, limits) {
   return out;
 }
 
-// ---- Rollout tails: only lifecycle, approval-reviewer, response-item type tokens and changed file names are taken. ----
-function scanLines(buffer, from, to, limits) {
-  const found = { lifecycle: null, lifecycleAt: null, startedAt: null, reviewer: null, lastItem: null, lastAt: null, paths: [] };
+// ---- Rollout tails: lifecycle, reviewer, changed file names and bounded recent conversational evidence. ----
+function scanLines(buffer, from, to, limits, metadataOnly = false) {
+  const found = { messages: [], lifecycle: null, lifecycleAt: null, startedAt: null, reviewer: null, lastItem: null, lastAt: null, paths: [] };
   for (let i = from; i < to;) {
     const nl = buffer.indexOf(10, i);
     if (nl < 0 || nl >= to) break;
@@ -276,10 +278,25 @@ function scanLines(buffer, from, to, limits) {
           found.lifecycleAt = Number.isFinite(at) ? at : null;
           const started = head[3] === 'task_started' ? STARTED_AT.exec(buffer.toString('latin1', i, Math.min(nl, i + 2048))) : null;
           found.startedAt = started ? Math.round(Number(started[1]) * 1000) : null;
-        } else if (head[2] === 'event_msg' && head[3] === 'item_completed') {
+        } else if (!metadataOnly && head[2] === 'event_msg' && head[3] === 'user_message' && nl - i <= CONTEXT_LINE_BYTES) {
+          try {
+            const row = JSON.parse(buffer.toString('utf8', i, nl)).payload;
+            const context = recentContext([...found.messages, { role: 'user', text: row.message, at }]);
+            if (context) found.messages = context.messages;
+          } catch { /* An incomplete user event supplies no evidence. */ }
+        } else if (!metadataOnly && head[2] === 'event_msg' && head[3] === 'item_completed') {
           for (const item of changedPaths(buffer, i, nl, limits)) found.paths.push(item);
         } else if (head[2] === 'response_item' && head[3]) {
           found.lastItem = TOOL_CALLS.has(head[3]) ? 'call' : 'other';
+          if (!metadataOnly && head[3] === 'message' && nl - i <= CONTEXT_LINE_BYTES) {
+            try {
+              const row = JSON.parse(buffer.toString('utf8', i, nl)).payload;
+              if (!row.channel || row.channel === 'final') {
+                const context = recentContext([{ role: row.role, content: row.content, at }]);
+                if (context) found.messages = recentContext([...found.messages, ...context.messages]).messages;
+              }
+            } catch { /* Partial or unfamiliar lines provide no conversational evidence. */ }
+          }
         } else if (head[2] === 'turn_context') {
           const reviewer = REVIEWER.exec(buffer.toString('latin1', i, Math.min(nl, i + 65536)));
           if (reviewer) found.reviewer = reviewer[1];
@@ -305,48 +322,59 @@ function addPaths(entry, paths, max, older) {
   }
   if (entry.paths.length > max) entry.paths.splice(0, entry.paths.length - max);
 }
-function mergeForward(entry, found, max) {
+function mergeForward(entry, found, max, metadataOnly = false) {
+  if (!metadataOnly) entry.recentContext = recentContext([...(entry.recentContext?.messages ?? []), ...found.messages]);
   if (found.lifecycle) Object.assign(entry, { lifecycle: found.lifecycle, lifecycleAt: found.lifecycleAt, startedAt: found.startedAt });
   if (found.reviewer) entry.reviewer = found.reviewer;
   if (found.lastItem) entry.lastItem = found.lastItem;
   if (found.lastAt !== null) entry.lastAt = found.lastAt;
   addPaths(entry, found.paths, max, false);
 }
-function fillBackward(entry, found, max) {
+function fillBackward(entry, found, max, metadataOnly = false) {
+  if (!metadataOnly) entry.recentContext = recentContext([...found.messages, ...(entry.recentContext?.messages ?? [])]);
   if (!entry.lifecycle && found.lifecycle) Object.assign(entry, { lifecycle: found.lifecycle, lifecycleAt: found.lifecycleAt, startedAt: found.startedAt });
   entry.reviewer ??= found.reviewer;
   entry.lastItem ??= found.lastItem;
   entry.lastAt ??= found.lastAt;
   addPaths(entry, found.paths, max, true);
 }
+const hasUserContext = entry => entry.recentContext?.messages.some(message => message.role === 'user') === true;
 // Walks back from `limit` in chunks, processing only lines whose start and end are both inside a chunk. A line longer than a
 // chunk is skipped (lifecycle and turn-context lines are small). A long running turn can put its task_started far back.
-async function scanBack(handle, entry, limit, budget, chunkBytes, chunkLimits) {
+// Conversation evidence has its own stopping condition: a completed turn can put its request well before the tail.
+// Once metadata is settled, only collect conversation text so the deeper read cannot change activity or edited files.
+async function scanBack(handle, entry, limit, budget, chunkBytes, chunkLimits, metadataOnly = false) {
   let spent = 0;
+  let seekLifecycle = !entry.lifecycle || (entry.lifecycle === 'task_started' && !entry.reviewer);
   // Once a turn start is known, look at most one more chunk for its approval setting.
   let afterLifecycle = entry.lifecycle ? 0 : null;
   while (limit > 0 && spent < budget) {
-    const start = Math.max(0, limit - chunkBytes);
+    const start = Math.max(0, limit - Math.min(chunkBytes, budget - spent));
     const buffer = await readRange(handle, start, limit - start);
     spent += buffer.length;
     let from = 0;
     if (start > 0) { const first = buffer.indexOf(10); from = first < 0 ? buffer.length : first + 1; }
     const to = buffer.lastIndexOf(10) + 1;
     const had = Boolean(entry.lifecycle);
-    if (from < to) fillBackward(entry, scanLines(buffer, from, to, chunkLimits), chunkLimits.editPaths);
+    if (from < to) {
+      const found = scanLines(buffer, from, to, chunkLimits, metadataOnly);
+      if (seekLifecycle) fillBackward(entry, found, chunkLimits.editPaths, metadataOnly);
+      else if (!metadataOnly) entry.recentContext = recentContext([...found.messages, ...(entry.recentContext?.messages ?? [])]);
+    }
     if (start === 0) { limit = 0; break; }
     limit = from < buffer.length ? start + from : start;
-    if (entry.lifecycle && (entry.lifecycle !== 'task_started' || entry.reviewer)) break;
+    if (entry.lifecycle && (entry.lifecycle !== 'task_started' || entry.reviewer)) seekLifecycle = false;
     if (entry.lifecycle && !had) afterLifecycle = spent;
-    if (afterLifecycle !== null && spent - afterLifecycle >= chunkBytes) break;
+    if (afterLifecycle !== null && spent - afterLifecycle >= chunkBytes) seekLifecycle = false;
+    if (!seekLifecycle && (metadataOnly || hasUserContext(entry))) break;
   }
   return limit === 0;
 }
-async function tailRollout(file, previous, backBudget, limits) {
+async function tailRollout(file, previous, backBudget, limits, metadataOnly = false) {
   const { handle, stat } = await openRead(file);
   try {
     const same = previous && previous.dev === stat.dev && previous.ino === stat.ino;
-    const deepEnough = previous && (previous.lifecycle || previous.reachedStart || previous.backBudget >= backBudget);
+    const deepEnough = previous && ((previous.lifecycle && (metadataOnly || hasUserContext(previous))) || previous.reachedStart || previous.backBudget >= backBudget);
     if (same && deepEnough && stat.size === previous.size && stat.mtimeMs === previous.mtimeMs) return previous;
     if (same && deepEnough && stat.size >= previous.consumed && stat.size - previous.consumed <= limits.growBytes) {
       const entry = { ...previous, size: stat.size, mtimeMs: stat.mtimeMs, paths: previous.paths };
@@ -354,7 +382,7 @@ async function tailRollout(file, previous, backBudget, limits) {
       let from = 0;
       if (!previous.aligned) { const first = buffer.indexOf(10); from = first < 0 ? buffer.length : first + 1; }
       const to = buffer.lastIndexOf(10) + 1;
-      if (from < to) { mergeForward(entry, scanLines(buffer, from, to, limits), limits.editPaths); entry.consumed = previous.consumed + to; entry.aligned = true; }
+      if (from < to) { mergeForward(entry, scanLines(buffer, from, to, limits, metadataOnly), limits.editPaths, metadataOnly); entry.consumed = previous.consumed + to; entry.aligned = true; }
       else if (to > 0) { entry.consumed = previous.consumed + to; entry.aligned = true; }
       return entry;
     }
@@ -367,10 +395,10 @@ async function tailRollout(file, previous, backBudget, limits) {
       dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, consumed: to > 0 ? start + to : start, aligned: to > 0 || start === 0,
       lifecycle: null, lifecycleAt: null, startedAt: null, reviewer: null, lastItem: null, lastAt: null, backBudget, reachedStart: start === 0, paths: [],
     };
-    if (from < to) mergeForward(entry, scanLines(buffer, from, to, limits), limits.editPaths);
-    if (start > 0 && (!entry.lifecycle || (entry.lifecycle === 'task_started' && !entry.reviewer))) {
+    if (from < to) mergeForward(entry, scanLines(buffer, from, to, limits, metadataOnly), limits.editPaths, metadataOnly);
+    if (start > 0 && (!entry.lifecycle || (entry.lifecycle === 'task_started' && !entry.reviewer) || (!metadataOnly && !hasUserContext(entry)))) {
       const limit = from < buffer.length ? start + from : start;
-      entry.reachedStart = await scanBack(handle, entry, limit, backBudget, limits.chunkBytes, limits);
+      entry.reachedStart = await scanBack(handle, entry, limit, backBudget, limits.chunkBytes, limits, metadataOnly);
     }
     return entry;
   } finally { await handle.close().catch(() => {}); }
@@ -441,6 +469,37 @@ export async function readCodexSessions(options = {}) {
     sharedReaders.set(key, reader);
   }
   return reader.read(options);
+}
+
+/** Private recovery inventory. Unlike the session board, this retains ended and archived sources.
+ * Contains local paths, never conversation text; do not expose it through agent_sessions. */
+export async function discoverCodexWorkTranscripts(options = {}) {
+  const codexDir = path.join(options.homeDir || os.homedir(), '.codex');
+  const cache = { schema: null, rows: null, files: new Map() };
+  const limits = { ...LIMITS, rows: options.maxSources ?? LIMITS.rows };
+  const warnings = [];
+  try {
+    const dbPath = await findStateDb(codexDir);
+    if (!dbPath) return { sources: [], warnings, truncated: false };
+    const [data, imports] = await Promise.all([
+      readThreads(cache, options, dbPath, limits, warnings), readImports(cache, codexDir, limits),
+    ]);
+    if (!data || !imports.ok) return { sources: [], warnings: [...warnings, 'Codex recovery sources could not be completely checked.'], truncated: true };
+    const children = new Set(data.edges.map(edge => edge.child).filter(Boolean));
+    const sources = [];
+    for (const row of data.threads) {
+      if (!UUID.test(row?.id ?? '') || !absolute(row.cwd) || !rolloutAllowed(row.rollout_path, codexDir)) continue;
+      const id = row.id.toLowerCase();
+      if (imports.ids.has(id) || children.has(id) || HIDDEN_SOURCES.includes(row.thread_source)
+        || typeof row.source !== 'string' || row.source.startsWith('{') || sealedPath(row.cwd) || sealedPath(row.rollout_path)) continue;
+      sources.push({ provider: 'codex', sessionId: id, sessionKey: `codex:${surfaceFor(row.source)}:${id}`, file: row.rollout_path, cwd: row.cwd });
+    }
+    const truncated = data.threads.length >= limits.rows || data.edges.length >= limits.edges;
+    if (truncated) warnings.push('Codex recovery source discovery reached its limit; some sources remain unchecked.');
+    return { sources, warnings, truncated };
+  } catch {
+    return { sources: [], warnings: ['Codex recovery sources could not be read.'], truncated: true };
+  }
 }
 
 // Cached by file signature; `parse` sees the text only inside this call.
@@ -633,6 +692,7 @@ async function readSchema(snapshots, dbPath) {
 }
 function buildStatements(schema, limits) {
   const columns = THREAD_COLUMNS.filter(column => schema.threads.has(column));
+  const childColumns = CHILD_COLUMNS.filter(column => schema.threads.has(column));
   const ms = column => schema.threads.has(column) ? column : null;
   const seconds = column => schema.threads.has(column) ? `${column} * 1000` : null;
   const order = [ms('recency_at_ms'), ms('updated_at_ms'), seconds('updated_at')].filter(Boolean);
@@ -646,10 +706,17 @@ function buildStatements(schema, limits) {
   if (schema.edges.has('parent_thread_id') && schema.edges.has('child_thread_id')) {
     statements.push({
       name: 'edges',
-      sql: 'SELECT e.parent_thread_id AS parent, e.child_thread_id AS child, t.rollout_path AS rolloutPath FROM thread_spawn_edges AS e LEFT JOIN threads AS t ON t.id = e.child_thread_id LIMIT ?',
+      sql: `SELECT e.parent_thread_id AS parent, e.child_thread_id AS child, ${childColumns.map(column => `t.${column}`).join(', ')} FROM thread_spawn_edges AS e LEFT JOIN threads AS t ON t.id = e.child_thread_id LIMIT ?`,
       params: [limits.edges],
     });
   }
+  // The source carries the same explicit relationship on installations without an edge table, and when a
+  // newly-created child has reached the thread table before its edge. No title or folder matching is involved.
+  statements.push({
+    name: 'children',
+    sql: `SELECT ${childColumns.join(', ')} FROM threads WHERE source LIKE '{%'${schema.threads.has('thread_source') ? " OR thread_source = 'subagent'" : ''} ORDER BY ${order.length ? `COALESCE(${[...order, '0'].join(', ')})` : 'rowid'} DESC LIMIT ?`,
+    params: [limits.rows],
+  });
   return statements;
 }
 async function readThreads(cache, options, dbPath, limits, warnings) {
@@ -665,7 +732,7 @@ async function readThreads(cache, options, dbPath, limits, warnings) {
       if (!REQUIRED_COLUMNS.every(column => schema.threads.has(column))) { cache.schema = null; warnings.push(WARN.layout); return null; }
       try {
         const result = await snapshots.query(dbPath, buildStatements(schema, limits));
-        return { threads: listOf(result?.threads), edges: listOf(result?.edges) };
+        return { threads: listOf(result?.threads), edges: listOf(result?.edges), children: listOf(result?.children) };
       } catch (error) {
         // A migration may have changed the table since the layout was cached; read the layout again once.
         cache.schema = null;
@@ -682,6 +749,17 @@ function surfaceFor(source) {
   if (source === 'exec') return 'background';
   return 'desktop';
 }
+function spawnSource(source) {
+  if (typeof source !== 'string' || source.length > 16384 || !source.startsWith('{')) return null;
+  try {
+    const spawn = JSON.parse(source)?.subagent?.thread_spawn;
+    if (!isObject(spawn) || !UUID.test(spawn.parent_thread_id ?? '')) return null;
+    return { parent: spawn.parent_thread_id.toLowerCase(), label: cleanTitle(typeof spawn.agent_path === 'string' ? spawn.agent_path.split('/').at(-1) : null) ?? cleanTitle(spawn.agent_nickname) };
+  } catch { return null; }
+}
+const isoTime = value => Number.isFinite(value) && value > 0 && value <= 8640000000000000 ? new Date(value).toISOString() : null;
+const createdTime = row => positiveMs(row.created_at_ms) ?? (positiveMs(row.created_at) !== null ? positiveMs(row.created_at) * 1000 : null) ?? uuidTime(row.id);
+const updatedTime = row => positiveMs(row.updated_at_ms) ?? (positiveMs(row.updated_at) !== null ? positiveMs(row.updated_at) * 1000 : null);
 function rolloutAllowed(file, codexDir) {
   if (!absolute(file) || !file.endsWith('.jsonl')) return false;
   const normal = path.normalize(file);
@@ -783,14 +861,17 @@ async function readCodex(cache, options) {
     const tails = new Map();
     const usedTails = new Set();
     let tailErrors = 0;
-    const tailOf = async (file, budget) => {
-      usedTails.add(file);
+    const tailOf = async (file, budget, metadataOnly = false) => {
+      // Separate cache entries prevent child metadata reads from retaining a top-level session's excerpts,
+      // and prevent a later top-level read from accepting a metadata-only tail as conversational evidence.
+      const cacheKey = metadataOnly ? `metadata:${file}` : file;
+      usedTails.add(cacheKey);
       try {
-        const entry = await tailRollout(file, cache.tails.get(file), budget, limits);
-        cache.tails.set(file, entry);
+        const entry = await tailRollout(file, cache.tails.get(cacheKey), budget, limits, metadataOnly);
+        cache.tails.set(cacheKey, entry);
         return entry;
       } catch (error) {
-        cache.tails.delete(file);
+        cache.tails.delete(cacheKey);
         if (error?.code !== 'ENOENT') tailErrors++;
         return null;
       }
@@ -799,16 +880,88 @@ async function readCodex(cache, options) {
       tails.set(item.id, await tailOf(item.rollout, item.live ? limits.backBytesLive : limits.backBytesIdle));
     });
 
-    // Helpers: locked descendants whose own current turn is still running.
+    // Keep explicit relationships even after a child stops writing. Edge status is deliberately ignored: Codex's
+    // persisted "open" edges outlive completed turns. Only the child's own lifecycle can establish a turn end.
     const children = new Map();
-    for (const edge of threadData.edges) {
-      const parent = typeof edge?.parent === 'string' ? edge.parent.toLowerCase() : null;
-      const child = typeof edge?.child === 'string' && UUID.test(edge.child) ? edge.child.toLowerCase() : null;
-      if (!parent || !child) continue;
+    const childRows = new Map();
+    const childParents = new Map();
+    const conflicting = new Set();
+    const rememberChild = (row, edgeParent = null) => {
+      const id = typeof row?.id === 'string' && UUID.test(row.id) ? row.id.toLowerCase() : null;
+      const spawn = spawnSource(row?.source);
+      const parent = typeof edgeParent === 'string' && UUID.test(edgeParent) ? edgeParent.toLowerCase() : spawn?.parent;
+      if (!id || !parent || id === parent) return;
+      if ((spawn && spawn.parent !== parent) || (childParents.has(id) && childParents.get(id) !== parent)) conflicting.add(id);
+      childParents.set(id, parent);
+      childRows.set(id, { ...row, id, spawn });
+    };
+    for (const row of threadData.children) rememberChild(row);
+    for (const edge of threadData.edges) rememberChild(edge, edge?.parent);
+    for (const [id, row] of childRows) {
+      const parent = childParents.get(id);
+      const cwd = absolute(row.cwd) ? row.cwd : null;
+      const worktree = worktrees.owners.get(id) ?? worktreeRootFor(cwd, worktrees.root);
+      if (conflicting.has(id) || row.thread_source === 'guardian_review' || sealedPath(cwd) || sealedPath(worktree) || sealedPath(row.rollout_path)) continue;
       if (!children.has(parent)) children.set(parent, []);
-      children.get(parent).push({ id: child, rollout: rolloutAllowed(edge.rolloutPath, codexDir) ? edge.rolloutPath : null });
+      children.get(parent).push({ row, id, parent, cwd, worktreePath: worktree, rollout: rolloutAllowed(row.rollout_path, codexDir) ? row.rollout_path : null });
     }
-    const helpersFor = async parentId => {
+    for (const list of children.values()) list.sort((a, b) => (updatedTime(b.row) ?? 0) - (updatedTime(a.row) ?? 0) || a.id.localeCompare(b.id));
+    const publicKeys = new Map(candidates.map(item => [item.id, `codex:${item.surface}:${item.id}`]));
+    for (const [id, row] of childRows) if (!publicKeys.has(id)) publicKeys.set(id, `codex:${surfaceFor(row.source)}:${id}`);
+    const childStates = new Map();
+    let childTailReads = 0;
+    const childState = async child => {
+      const row = child.row;
+      // One shared per-poll cap, in addition to the per-parent depth/count cap. Descendants are metadata-only;
+      // the aggregator uses their internal folder fields for project privacy checks, then strips those fields.
+      let tail = null;
+      if (child.rollout && childTailReads < limits.tails) {
+        childTailReads++;
+        tail = await tailOf(child.rollout, limits.backBytesIdle, true);
+      }
+      const hook = hookStates.get(child.id);
+      const reportedAt = Number.isFinite(hook?.stateAt) ? hook.stateAt : null;
+      const own = tail?.lastAt ?? tail?.mtimeMs ?? 0;
+      const live = loaded(child.id);
+      const fresh = own > 0 && nowMs - own <= limits.staleWorkingMs;
+      let activity = 'unknown';
+      let confidence = 'inferred';
+      let endedAt = null;
+      if (tail?.lifecycle === 'task_complete' || tail?.lifecycle === 'turn_aborted') {
+        activity = tail.lifecycle === 'turn_aborted' ? 'interrupted' : live ? 'open' : 'quiet';
+        confidence = 'reported';
+        endedAt = isoTime(tail.lifecycleAt);
+      } else if (tail?.lifecycle === 'task_started' && live && fresh) {
+        activity = 'working';
+        confidence = 'reported';
+        if (tail.reviewer === 'user' && tail.lastItem === 'call' && nowMs - tail.mtimeMs > limits.waitQuietMs) {
+          activity = 'needs-you';
+          confidence = 'inferred';
+        }
+      }
+      if (reportedAt !== null && reportedAt >= own && hook?.state === 'ended') {
+        activity = 'quiet';
+        confidence = 'reported';
+        endedAt = isoTime(reportedAt);
+      } else if (reportedAt !== null && reportedAt >= own && live && ['working', 'open', 'needs-you', 'failed', 'interrupted', 'quiet'].includes(hook?.state)
+        && nowMs - reportedAt <= limits.staleWorkingMs) {
+        activity = hook.state;
+        confidence = 'reported';
+        if (activity === 'open' && hook.event === 'agent-turn-complete') endedAt = isoTime(reportedAt);
+        // A new active report belongs to a resumed turn, not the previous observed end.
+        if (activity === 'working' || activity === 'needs-you') endedAt = null;
+      }
+      const startedAt = createdTime(row);
+      const updatedAt = isoTime(Math.max(updatedTime(row) ?? 0, tail?.lastAt ?? 0, tail?.mtimeMs ?? 0, reportedAt ?? 0, startedAt ?? 0));
+      if (!updatedAt) return null;
+      return {
+        key: publicKeys.get(child.id), id: child.id, parentSessionKey: publicKeys.get(child.parent), provider: 'codex',
+        cwd: child.cwd, worktreePath: child.worktreePath,
+        label: row.spawn?.label ?? cleanTitle(typeof row.agent_path === 'string' ? row.agent_path.split('/').at(-1) : null) ?? cleanTitle(row.agent_nickname) ?? 'Codex helper',
+        activity, confidence, startedAt: isoTime(startedAt), updatedAt, endedAt,
+      };
+    };
+    const childrenFor = async parentId => {
       const found = [];
       const visited = new Set([parentId]);
       let frontier = [parentId];
@@ -818,16 +971,22 @@ async function readCodex(cache, options) {
           if (visited.has(child.id)) continue;
           visited.add(child.id);
           next.push(child.id);
-          if (child.rollout && loaded(child.id) && found.length < limits.helperChildren) found.push(child);
+          if (found.length < limits.helperChildren) found.push(child);
         }
         frontier = next;
       }
-      let count = 0;
+      const states = new Map();
       await pool(found, limits.tailConcurrency, async child => {
-        const entry = await tailOf(child.rollout, limits.backBytesLive);
-        if (entry?.lifecycle === 'task_started') count++;
+        if (!childStates.has(child.id)) childStates.set(child.id, childState(child));
+        states.set(child.id, await childStates.get(child.id));
       });
-      return count;
+      // Keep the bounded traversal order and never expose a nested edge without its immediate parent.
+      const retained = new Set([publicKeys.get(parentId)]);
+      return found.map(child => states.get(child.id)).filter(state => {
+        if (!state || !retained.has(state.parentSessionKey)) return false;
+        retained.add(state.key);
+        return true;
+      });
     };
 
     const sessions = [];
@@ -855,7 +1014,6 @@ async function readCodex(cache, options) {
             confidence = 'inferred';
             activitySince = Math.round(tail.mtimeMs);
           }
-          helpers = await helpersFor(item.id);
         } else {
           activity = 'interrupted';
           reason = REASON_INTERRUPTED;
@@ -880,6 +1038,8 @@ async function readCodex(cache, options) {
       if (!keep) continue;
       // Archived threads stay hidden unless a live app holds them and nothing is unread.
       if (item.archived && !(live && !item.unread)) continue;
+      const sessionChildren = await childrenFor(item.id);
+      if (activity === 'working') helpers = sessionChildren.filter(child => child.activity === 'working').length;
       sessions.push({
         app: 'codex',
         surface: item.surface,
@@ -901,10 +1061,12 @@ async function readCodex(cache, options) {
         // Summon's own fact: this thread was bound to a launch Summon started.
         origin: hook?.launch ? 'summon' : null,
         helpers,
+        children: sessionChildren,
         model: item.hasModel ? cleanTitle(item.row.model, 80) : null,
         // Files this thread wrote, newest first. Codex records no title source, so a name is left to count as the
         // app's own wording.
         titleSource: null,
+        ...(tail?.recentContext ? { recentContext: tail.recentContext } : {}),
         touchedPaths: tail?.paths?.length ? [...tail.paths].reverse() : null,
       });
     }

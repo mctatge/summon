@@ -64,11 +64,11 @@ const context = (at, reviewer = 'auto_review') => line(at, 'turn_context', { cwd
 const started = at => line(at, 'event_msg', { type: 'task_started', turn_id: 'turn', started_at: Math.floor(at / 1000), model_context_window: 1000, collaboration_mode_kind: 'default' });
 const complete = at => line(at, 'event_msg', { type: 'task_complete', turn_id: 'turn', started_at: Math.floor(at / 1000) - 5, completed_at: Math.floor(at / 1000), duration_ms: 5000, time_to_first_token_ms: 10, last_agent_message: SECRET });
 const aborted = at => line(at, 'event_msg', { type: 'turn_aborted', turn_id: 'turn', reason: 'interrupted', started_at: Math.floor(at / 1000) - 5, completed_at: Math.floor(at / 1000), duration_ms: 5000 });
-const user = at => line(at, 'event_msg', { type: 'user_message', message: `${SECRET} {"timestamp":"x","type":"event_msg","payload":{"type":"task_complete"}}\n{"timestamp":"y","type":"event_msg","payload":{"type":"task_complete"}}` });
-const message = (at, text = SECRET) => line(at, 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+const user = at => line(at, 'event_msg', { type: 'user_message', message: `Please fix the session list {"timestamp":"x","type":"event_msg","payload":{"type":"task_complete"}}\n{"timestamp":"y","type":"event_msg","payload":{"type":"task_complete"}}` });
+const message = (at, text = 'The session list is updated') => line(at, 'response_item', { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 const call = at => line(at, 'response_item', { type: 'function_call', name: 'exec_command', arguments: SECRET, call_id: 'call_1' });
 const output = at => line(at, 'response_item', { type: 'function_call_output', call_id: 'call_1', output: SECRET });
-const filler = (at, bytes) => message(at, `${SECRET} `.repeat(Math.ceil(bytes / (SECRET.length + 1))));
+const filler = (at, bytes) => line(at, 'response_item', { type: 'function_call_output', call_id: 'filler', output: `${SECRET} `.repeat(Math.ceil(bytes / (SECRET.length + 1))) });
 
 const THREAD_SQL = `CREATE TABLE threads (
   id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL,
@@ -278,11 +278,11 @@ test('lists top-level Codex threads with states, titles, flags and worktrees, an
   assert.equal(result.sessions[0].id, fx.ids.waiting, 'needs-you sorts first');
   assert.deepEqual(result.sources, [{ app: 'codex', label: 'Codex', available: true, running: true, detail: '7 threads open.' }]);
   for (const session of result.sessions) {
-    assert.deepEqual(Object.keys(session).sort(), ['activity', 'activitySince', 'app', 'archived', 'branch', 'confidence', 'cwd', 'helpers', 'id', 'live', 'model', 'origin', 'pinned', 'reason', 'startedAt', 'surface', 'title', 'titleSource', 'touchedPaths', 'unread', 'updatedAt', 'worktreePath'].sort());
+    assert.deepEqual(Object.keys(session).filter(key => key !== 'recentContext').sort(), ['activity', 'activitySince', 'app', 'archived', 'branch', 'children', 'confidence', 'cwd', 'helpers', 'id', 'live', 'model', 'origin', 'pinned', 'reason', 'startedAt', 'surface', 'title', 'titleSource', 'touchedPaths', 'unread', 'updatedAt', 'worktreePath'].sort());
     assert.equal(session.app, 'codex');
   }
   const text = JSON.stringify(result);
-  assert.ok(!text.includes(SECRET), 'No conversation text leaves the reader.');
+  assert.ok(!text.includes(SECRET), 'No instructions, draft, metadata or tool output leaves the reader.');
   assert.ok(!text.includes('Old name'));
   assert.ok(!text.includes('\u202e'));
   for (const { statements } of snapshots.calls) for (const statement of statements) assert.doesNotMatch(statement.sql, FORBIDDEN_SQL);
@@ -335,6 +335,160 @@ test('repeat reads reuse the snapshot until the database changes, and rollout gr
   assert.equal(byKey(fx, fifth).abortedOpen.live, false);
   assert.equal(byKey(fx, fifth).abortedOpen.activity, 'quiet');
   await reader.close();
+});
+
+test('Codex children retain explicit nested relationships and ended turns without claiming work completion', async t => {
+  const fx = await standard(t);
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots() });
+  const options = { now: fx.now, processes: liveProcesses() };
+  let parent = byKey(fx, await reader.read(options)).working;
+  const children = Object.fromEntries(parent.children.map(child => [child.id, child]));
+  assert.equal(parent.children.length, 4, 'Recent unlocked and ended children remain visible, as well as live helpers.');
+  assert.deepEqual(children[fx.ids.childWorking], {
+    key: `codex:desktop:${fx.ids.childWorking}`, id: fx.ids.childWorking,
+    parentSessionKey: `codex:desktop:${fx.ids.working}`, provider: 'codex', label: 'x',
+    cwd: '/work/project', worktreePath: null,
+    activity: 'working', confidence: 'reported', startedAt: new Date(fx.now - 5 * MIN - HOUR).toISOString(),
+    updatedAt: children[fx.ids.childWorking].updatedAt, endedAt: null,
+  });
+  assert.equal(children[fx.ids.grandchild].parentSessionKey, children[fx.ids.childWorking].key);
+  assert.equal(children[fx.ids.childDone].endedAt, new Date(fx.now - 8 * MIN).toISOString());
+  assert.equal(children[fx.ids.childDone].activity, 'open');
+  assert.equal(children[fx.ids.childUnlocked].activity, 'unknown', 'A stopped writer is not proof of failure or completion.');
+  assert.equal(children[fx.ids.childUnlocked].endedAt, null);
+  assert.ok(parent.children.every(child => Number.isFinite(Date.parse(child.updatedAt))));
+  assert.doesNotMatch(JSON.stringify(parent.children), /SECRET|rollout_path|recentContext|task_done/);
+
+  await fs.appendFile(fx.files.childDone, started(fx.now));
+  parent = byKey(fx, await reader.read(options)).working;
+  assert.equal(parent.children.find(child => child.id === fx.ids.childDone).endedAt, null, 'A new turn clears the previous observed turn end.');
+  assert.equal(parent.children.find(child => child.id === fx.ids.childDone).activity, 'working');
+
+  await fs.appendFile(fx.files.childDone, aborted(fx.now + 1000));
+  parent = byKey(fx, await reader.read({ ...options, now: fx.now + 1000 })).working;
+  assert.equal(parent.children.find(child => child.id === fx.ids.childDone).activity, 'interrupted');
+  assert.equal(parent.children.find(child => child.id === fx.ids.childDone).endedAt, new Date(fx.now + 1000).toISOString());
+
+  await fs.appendFile(fx.files.working, complete(fx.now + 2000));
+  parent = byKey(fx, await reader.read({ ...options, now: fx.now + 2000 })).working;
+  assert.equal(parent.children.length, 4, 'The parent ending its turn does not erase its delegation history.');
+  assert.equal(parent.helpers, 0);
+});
+
+test('Codex source metadata supplies parentage without an edge table and never matches by title or folder', async t => {
+  const fx = await fixture(t, { schema: 'old' });
+  await fx.add('parent', { source: 'cli', lock: true, rollout: [started(fx.now - MIN)] });
+  const source = JSON.stringify({ subagent: { thread_spawn: { parent_thread_id: fx.ids.parent, agent_path: '/root/check\u202enames\u0007', depth: 1 } } });
+  await fx.add('child', { source, lock: true, rollout: [started(fx.now - MIN)] });
+  await fx.add('sameFolderAndTitle', { name: 'Thread child', cwd: '/work/project', lock: true, rollout: [started(fx.now - MIN)] });
+  await fx.add('noParent', { source: JSON.stringify({ subagent: { thread_spawn: { agent_path: '/root/check' } } }), lock: true, rollout: [started(fx.now - MIN)] });
+  const result = await readCodexSessions({ homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: liveProcesses() });
+  const parent = byKey(fx, result).parent;
+  assert.deepEqual(parent.children.map(child => child.id), [fx.ids.child]);
+  assert.equal(parent.children[0].parentSessionKey, `codex:cli:${fx.ids.parent}`);
+  assert.equal(parent.children[0].label, 'check names');
+  assert.deepEqual(byKey(fx, result).sameFolderAndTitle.children, []);
+  assert.ok(!result.sessions.some(session => session.id === fx.ids.child), 'Children remain nested instead of duplicating top-level sessions.');
+});
+
+test('Codex child lifecycle becomes unknown when stale, missing or unreadable, and accepts fresh explicit reports', async t => {
+  const fx = await fixture(t);
+  await fx.add('parent', { lock: true, rollout: [started(fx.now - MIN)] });
+  await fx.add('stale', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, updated: fx.now - HOUR, rollout: [started(fx.now - HOUR)], mtime: fx.now - HOUR });
+  await fx.add('missing', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, rolloutPath: path.join(fx.codex, 'sessions', 'missing.jsonl') });
+  await fx.add('waiting', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, rollout: [context(fx.now - 5 * MIN, 'user'), started(fx.now - 5 * MIN), call(fx.now - MIN)], mtime: fx.now - MIN });
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots() });
+  const options = { now: fx.now, processes: liveProcesses() };
+  const get = result => Object.fromEntries(byKey(fx, result).parent.children.map(child => [child.id, child]));
+  let child = get(await reader.read(options));
+  assert.deepEqual([child[fx.ids.stale].activity, child[fx.ids.stale].confidence, child[fx.ids.stale].endedAt], ['unknown', 'inferred', null]);
+  assert.equal(child[fx.ids.missing].activity, 'unknown');
+  assert.deepEqual([child[fx.ids.waiting].activity, child[fx.ids.waiting].confidence], ['needs-you', 'inferred']);
+
+  child = get(await reader.read({ ...options, hookStates: new Map([[fx.ids.stale, { state: 'working', stateAt: fx.now }]]) }));
+  assert.deepEqual([child[fx.ids.stale].activity, child[fx.ids.stale].confidence, child[fx.ids.stale].endedAt], ['working', 'reported', null]);
+  child = get(await reader.read({ ...options, hookStates: new Map([[fx.ids.stale, { state: 'ended', stateAt: fx.now }]]) }));
+  assert.deepEqual([child[fx.ids.stale].activity, child[fx.ids.stale].endedAt], ['quiet', new Date(fx.now).toISOString()]);
+  child = get(await reader.read({ ...options, hookStates: new Map([[fx.ids.stale, { state: 'open', event: 'agent-turn-complete', stateAt: fx.now }]]) }));
+  assert.deepEqual([child[fx.ids.stale].activity, child[fx.ids.stale].endedAt], ['open', new Date(fx.now).toISOString()]);
+});
+
+test('Codex children suppress private paths, conflicted parents and descendants behind private children', async t => {
+  const fx = await fixture(t);
+  await fx.add('parent', { rollout: [complete(fx.now - MIN)] });
+  await fx.add('otherParent', { rollout: [complete(fx.now - MIN)] });
+  await fx.add('cwdPrivate', { source: fx.subagent('parent'), threadSource: 'subagent', cwd: '/work/sealed-client/project', lock: true, rollout: [started(fx.now - MIN)] });
+  await fx.add('belowPrivate', { source: fx.subagent('cwdPrivate'), threadSource: 'subagent', lock: true, rollout: [started(fx.now - MIN)] });
+  await fx.add('rolloutPrivate', { source: fx.subagent('parent'), threadSource: 'subagent', rolloutPath: path.join(fx.codex, 'sessions', 'sealed-client', 'private.jsonl') });
+  await fx.add('conflict', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, rollout: [started(fx.now - MIN)] });
+  fx.edge('otherParent', 'conflict');
+  await fx.add('okay', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, rollout: [started(fx.now - MIN)] });
+  const result = await readCodexSessions({ homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: liveProcesses() });
+  assert.deepEqual(byKey(fx, result).parent.children.map(child => child.id), [fx.ids.okay]);
+  assert.deepEqual(byKey(fx, result).otherParent.children, []);
+  for (const key of ['cwdPrivate', 'belowPrivate', 'rolloutPrivate', 'conflict']) assert.ok(!JSON.stringify(result).includes(fx.ids[key]));
+});
+
+test('Codex child traversal and tail checks are bounded without removing observed relationships', async t => {
+  const fx = await standard(t);
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots() });
+  const options = { now: fx.now, processes: liveProcesses() };
+  let parent = byKey(fx, await reader.read({ ...options, limits: { helperDepth: 1, helperChildren: 2 } })).working;
+  assert.equal(parent.children.length, 2);
+  assert.ok(parent.children.every(child => child.parentSessionKey === `codex:desktop:${fx.ids.working}`));
+  parent = byKey(fx, await reader.read({ ...options, limits: { tails: 0 } })).working;
+  assert.equal(parent.children.length, 4);
+  assert.ok(parent.children.every(child => child.activity === 'unknown' && child.endedAt === null));
+});
+
+test('Codex child tails skip conversation parsing and backfill while parent context remains available', async t => {
+  const fx = await fixture(t);
+  const childText = 'PRIVATE-CHILD-CONVERSATION-MARKER';
+  await fx.add('parent', { rollout: [user(fx.now - MIN), message(fx.now - MIN), complete(fx.now - MIN)] });
+  await fx.add('child', { source: fx.subagent('parent'), threadSource: 'subagent', lock: true, rollout: [
+    line(fx.now - 5 * MIN, 'event_msg', { type: 'user_message', message: childText.repeat(10000) }),
+    filler(fx.now - 4 * MIN, 520 * 1024), message(fx.now - MIN, childText), complete(fx.now - MIN),
+  ] });
+  let childBytes = 0;
+  let childConversationsParsed = 0;
+  const open = fs.open;
+  const parse = JSON.parse;
+  t.mock.method(fs, 'open', async (...args) => {
+    const handle = await open(...args);
+    if (args[0] === fx.files.child) {
+      const read = handle.read.bind(handle);
+      t.mock.method(handle, 'read', async (...readArgs) => {
+        const result = await read(...readArgs);
+        childBytes += result.bytesRead;
+        return result;
+      });
+    }
+    return handle;
+  });
+  t.mock.method(JSON, 'parse', (text, ...args) => {
+    if (typeof text === 'string' && text.includes(childText)) childConversationsParsed++;
+    return parse(text, ...args);
+  });
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: liveProcesses() });
+  const cold = byKey(fx, await reader.read()).parent;
+  assert.equal(cold.children[0].activity, 'open');
+  assert.equal(cold.children[0].endedAt, new Date(fx.now - MIN).toISOString());
+  assert.equal(childBytes, 64 * 1024, 'A settled child lifecycle needs only the tail, even with a huge earlier prompt.');
+  assert.equal(childConversationsParsed, 0, 'Child assistant messages are never decoded into retained context.');
+  assert.ok(cold.recentContext.messages.some(row => row.role === 'user'), 'Parent context parsing is unchanged.');
+  assert.doesNotMatch(JSON.stringify(cold.children), /PRIVATE-CHILD|recentContext/);
+  await reader.read();
+  assert.equal(childBytes, 64 * 1024, 'The metadata-only cache does not retry missing conversational evidence.');
+
+  const appended = context(fx.now) + started(fx.now)
+    + line(fx.now, 'event_msg', { type: 'user_message', message: childText }) + message(fx.now, childText);
+  await fs.appendFile(fx.files.child, appended);
+  const warm = byKey(fx, await reader.read()).parent;
+  assert.equal(warm.children[0].activity, 'working');
+  assert.equal(warm.children[0].endedAt, null);
+  assert.equal(childConversationsParsed, 0, 'Incremental child user and assistant events are also never decoded.');
+  assert.equal(childBytes, 64 * 1024 + Buffer.byteLength(appended));
+  assert.deepEqual(warm.recentContext, cold.recentContext);
 });
 
 test('without a live codex process, locks do not count and started turns read as interrupted', async t => {
@@ -621,4 +775,73 @@ test('Codex reader: a turn-ended report newer than the rollout turns a started t
   // Without hook states nothing changes.
   s = byKey(fx, await reader.read({ now: () => fx.now, processes: liveProcesses() }));
   assert.deepEqual([s.working.activity, s.working.origin, s.waiting.activity, s.waiting.confidence], ['working', null, 'needs-you', 'inferred']);
+});
+
+test('Codex recent evidence follows subsequent prompts and excludes instructions, analysis and tool output', async t => {
+  const fx = await fixture(t);
+  const request = (at, text) => line(at, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+  await fx.add('evolving', { name: 'First request', lock: true, rollout: [request(fx.now - MIN, 'Start with the old task'), message(fx.now - MIN + 1)] });
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: processes(APP_CODEX) });
+  assert.equal(byKey(fx, await reader.read()).evolving.recentContext.messages[0].text, 'Start with the old task');
+  await fs.appendFile(fx.files.evolving, [
+    ...Array.from({ length: 8 }, (_, i) => request(fx.now - 9000 + i * 100, `Work on evolving goals ${i}`)),
+    request(fx.now - 1000, '<environment_context>SECRET injected context</environment_context>'),
+    line(fx.now - 900, 'response_item', { type: 'message', role: 'developer', content: [{ type: 'input_text', text: SECRET }] }),
+    line(fx.now - 800, 'response_item', { type: 'message', role: 'assistant', channel: 'analysis', content: [{ type: 'output_text', text: SECRET }] }),
+    output(fx.now - 700), message(fx.now - 600, 'The current goal is clear'), complete(fx.now - 500),
+  ].join(''));
+  const recent = byKey(fx, await reader.read()).evolving;
+  assert.equal(recent.title, 'First request');
+  assert.equal(recent.recentContext.messages.length, 6);
+  assert.equal(recent.recentContext.messages.at(-2).text, 'Work on evolving goals 7');
+  assert.equal(recent.recentContext.updatedAt, fx.now - 600);
+  assert.doesNotMatch(JSON.stringify(recent.recentContext), /SECRET|Start with the old task/);
+});
+
+test('completed Codex turns recover recent user intent behind large tool output on cold and warm reads', async t => {
+  const fx = await fixture(t);
+  const request = (at, text) => line(at, 'response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text }] });
+  const framing = 'Explain the limits of the import checks';
+  const followup = 'Follow up with the professor about chart labels, the route importer, and fixed share links';
+  await fx.add('completed', { name: 'Project follow-up', updated: fx.now - MIN, rollout: [
+    request(fx.now - 20 * MIN, framing), message(fx.now - 19 * MIN, 'The checks establish row counts'),
+    context(fx.now - 10 * MIN), started(fx.now - 10 * MIN), request(fx.now - 9 * MIN, followup),
+    fileChange(fx.now - 8 * MIN, ['/work/project/src/old-edit.ts']),
+    filler(fx.now - 5 * MIN, 320 * 1024),
+    request(fx.now - 2 * MIN, '<environment_context>SECRET instructions</environment_context>'),
+    line(fx.now - 2 * MIN, 'response_item', { type: 'message', role: 'assistant', channel: 'analysis', content: [{ type: 'output_text', text: SECRET }] }),
+    message(fx.now - MIN, 'The share link fix is ready'), complete(fx.now - MIN),
+  ] });
+  const options = { homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: processes() };
+  const reader = createCodexReader(options);
+  const cold = byKey(fx, await reader.read()).completed;
+  assert.deepEqual(cold.recentContext.messages.filter(row => row.role === 'user').map(row => row.text), [framing, followup]);
+  assert.equal(cold.activity, 'quiet', 'A deeper conversational read cannot reopen the completed turn.');
+  assert.equal(cold.touchedPaths, null, 'Conversation backfill does not broaden the metadata-only edited-file scan.');
+  assert.doesNotMatch(JSON.stringify(cold), /SECRET/);
+  assert.deepEqual(byKey(fx, await reader.read()).completed.recentContext, cold.recentContext, 'An unchanged cached read keeps recovered intent.');
+
+  await fs.appendFile(fx.files.completed, message(fx.now - 500, 'The follow-up is still a draft') + complete(fx.now - 400));
+  const warm = byKey(fx, await reader.read()).completed;
+  assert.deepEqual(warm.recentContext.messages.filter(row => row.role === 'user').map(row => row.text), [framing, followup]);
+  assert.equal(warm.recentContext.messages.at(-1).text, 'The follow-up is still a draft');
+  const restarted = byKey(fx, await createCodexReader(options).read()).completed;
+  assert.deepEqual(restarted.recentContext, warm.recentContext, 'Restarting the app recovers the same bounded evidence.');
+});
+
+test('Codex intent backfill respects its byte cap and retries when the allowed budget grows', async t => {
+  const fx = await fixture(t);
+  await fx.add('bounded', { updated: fx.now - MIN, rollout: [
+    user(fx.now - 5 * MIN), filler(fx.now - 3 * MIN, 200 * 1024), message(fx.now - MIN), complete(fx.now - MIN),
+  ] });
+  const reader = createCodexReader({ homeDir: fx.home, snapshots: fakeSnapshots(), now: fx.now, processes: processes() });
+  // The chunk is deliberately bigger than the remaining budget. It must not read past that budget to find the request.
+  const limited = { limits: { backBytesIdle: 100 * 1024 } };
+  const first = byKey(fx, await reader.read(limited)).bounded;
+  assert.ok(first.recentContext.messages.every(row => row.role === 'assistant'));
+  assert.equal(first.activity, 'quiet');
+  assert.deepEqual(byKey(fx, await reader.read(limited)).bounded.recentContext, first.recentContext);
+  const recovered = byKey(fx, await reader.read()).bounded;
+  assert.ok(recovered.recentContext.messages.some(row => row.role === 'user'), 'A cached lifecycle event does not prevent a larger bounded intent search.');
+  assert.doesNotMatch(JSON.stringify(recovered), /SECRET/);
 });
