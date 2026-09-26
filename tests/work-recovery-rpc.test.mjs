@@ -70,6 +70,9 @@ test('work recovery exposes only bounded read options in the canonical agent sch
   const tool = WORK_ITEM_TOOLS.find(item => item.name === 'work_recovery');
   assert.equal(tool.annotations.readOnlyHint, true);
   assert.equal(tool.annotations.openWorldHint, false);
+  // Capture is on by default, so the text agents read must not present excerpts as material the user chose to share.
+  assert.match(tool.description, /by default, looking back 14 days, unless the user turned recovery off/);
+  assert.doesNotMatch(tool.description, /after the user enabled|explicitly enabled/);
   assert.deepEqual(Object.keys(tool.inputSchema.properties), ['repoId', 'offset', 'limit', 'includeReviewed']);
   assert.deepEqual(tool.inputSchema.required, ['repoId']);
   assert.equal(tool.inputSchema.properties.limit.maximum, 20);
@@ -82,7 +85,8 @@ test('work recovery exposes only bounded read options in the canonical agent sch
 test('MCP recovery reads use exact project and pagination without capture or review actions', async t => {
   const f = await fixture(t);
   const initialized = await f.request('initialize', {});
-  assert.match(initialized.result.instructions, /unreviewed source excerpts/);
+  assert.match(initialized.result.instructions, /unreviewed source excerpts that Summon captures locally by default/);
+  assert.doesNotMatch(initialized.result.instructions, /explicitly enabled/);
   const tools = (await f.request('tools/list')).result.tools;
   assert.deepEqual(tools.filter(tool => /recovery/.test(tool.name)).map(tool => tool.name), ['work_recovery']);
   const options = { repoId: 'repo-a', offset: 4, limit: 2, includeReviewed: true };

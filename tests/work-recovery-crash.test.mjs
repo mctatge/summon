@@ -38,7 +38,8 @@ test('a killed recovery process resumes real local transcripts once without alte
   const source = path.join(transcriptDir, `${SESSION}.jsonl`);
   const user = (text, at, uuid, role = 'user') => ({ type: role, sessionId: SESSION, cwd: repo, entrypoint: 'cli', uuid,
     timestamp: new Date(at).toISOString(), message: { role, stop_reason: role === 'assistant' ? 'end_turn' : undefined, content: text } });
-  await fs.writeFile(source, `${JSON.stringify(user('Historical material stays outside capture.', AT - 1000, 'old'))}\n`);
+  // Older than the 14-day look-back of a first enable, so it stays outside capture.
+  await fs.writeFile(source, `${JSON.stringify(user('Historical material stays outside capture.', AT - 15 * 24 * 60 * 60 * 1000, 'old'))}\n`);
   const untouched = `${JSON.stringify({ fixture: 'Existing goals, ownership and hierarchy must remain exact.' })}\n`;
   const goals = path.join(data, 'visual-goals.json'); await fs.writeFile(goals, untouched);
   const children = [];

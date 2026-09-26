@@ -92,7 +92,7 @@ async function launch(){
   const noop=()=>{};
   const missing=async()=>{throw new Error('Synthetic fixture has no optional files.');};
   const executable=async name=>`/synthetic/bin/${name}`,spawnLongLived=()=>assert.fail('No CLI is spawned in this lifecycle.');
-  const ctx={handlers:new Map(),trays:[],power:new Map(),asks:[],choices:[],readerOptions:{},usageOptions:null,rpcOptions:null,core:null,window:null,health:[],executable,spawnLongLived};
+  const ctx={handlers:new Map(),trays:[],power:new Map(),asks:[],choices:[],readerOptions:{},usageOptions:null,rpcOptions:null,core:null,window:null,health:[],recoveryScans:[],executable,spawnLongLived};
   ctx.reasoning={stored:{enabled:false,engine:'auto'},calls:[],closed:0,read(){return {settings:{...this.stored}};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},decorateSessions(view){this.calls.push(['decorate',view]);return view;},async close(){this.closed++;}};
   ctx.sessionReads=[];ctx.flightReads=[];ctx.inferences=[];ctx.projectReads=[];ctx.localAvailable=false;
   ctx.core={calls:[],stored:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},started:0,paused:0,resumed:0,stopped:0,closed:0,
@@ -154,7 +154,7 @@ async function launch(){
     chooseEngine:options=>{ctx.choices.push(options);return options.task?.engine&&options.task.engine!=='auto'?{engine:options.task.engine,reason:'pinned'}:{engine:'codex',reason:'synthetic choice'};},
     loadSealedSegments:()=>[],sealedPath:()=>false,
     createWorkRecoverySources:async()=>({close:async()=>{}}),
-    createWorkRecovery:async()=>({read:async()=>({}),setEnabled:async()=>({}),scan:async()=>null,review:async()=>({}),userMessages:async()=>[],close:async()=>{}}),
+    createWorkRecovery:async()=>({read:async()=>({}),setEnabled:async()=>({}),scan:async options=>{ctx.recoveryScans.push(options);return null;},review:async()=>({}),userMessages:async()=>[],close:async()=>{}}),
     createCompletionReconciler:()=>({run:async()=>({reported:[],skipped:[],errors:[]})}),
     createLauncher:()=>({launch:()=>assert.fail('Nothing launches.'),installClaudeHooks:()=>assert.fail('Nothing installs hooks.'),hookStatus:async()=>({claude:{installed:false,current:false}})}),
     setTimeout,clearTimeout,URL,Buffer,console,
@@ -316,6 +316,19 @@ test('main routes previews, effort overrides and feedback through the trusted wi
       assert.equal(ctx.router.calls.length,before,'untrusted routing messages never reach the router');
     }
     assert.ok(!Object.values(ctx.rpcOptions).includes(ctx.router),'feedback and execution remain off the read-only socket');
+  }finally{
+    ctx.app.quit();
+    for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));
+  }
+});
+
+test('a window recovery check must name one project, so only the automatic check can turn projects on by default',async()=>{
+  const ctx=await launch();
+  try{
+    for(const bad of [undefined,null,{},[],{repoId:''},{repoId:7}])await assert.rejects(ctx.call('work-recovery-scan',bad),/Invalid request/);
+    assert.deepEqual(ctx.recoveryScans,[],'an unnamed window check never reaches the recovery store');
+    await ctx.call('work-recovery-scan',{repoId:'demo'});
+    assert.deepEqual(plain(ctx.recoveryScans),[{repoId:'demo'}]);
   }finally{
     ctx.app.quit();
     for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));

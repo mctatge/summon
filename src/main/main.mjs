@@ -203,8 +203,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     handle('visual-repository',(repoId,options)=>visuals().read(validId(repoId),options));
     handle('visual-goal-save',input=>visuals().saveGoal(input));
     handle('work-tree',(options={})=>visuals().readTree(options));
-    // Opt-in per-project recovery reads local conversation records without a model,
-    // independently of the visible panel. Enabling/scanning/reviewing stays window-only.
+    // Per-project recovery, on by default, reads local conversation records without a model, independently of the visible panel.
+    // Only the automatic check below turns a project on by default; the window's choices, checks and reviews stay window-only.
     try{
       recoverySources=await createWorkRecoverySources({homeDir:!app.isPackaged&&process.env.SUMMON_TEST_HOME?path.resolve(process.env.SUMMON_TEST_HOME):homedir(),run});
       workRecovery=await createWorkRecovery({dataDir,getRepositories:async()=>(await flight().read({maxAgeMs:20000})).repos,
@@ -230,7 +230,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     }
     handle('work-recovery',options=>recovery().read(options));
     handle('work-recovery-enabled',async options=>{const result=await recovery().setEnabled(options);push();return result;});
-    handle('work-recovery-scan',async options=>{const result=await recovery().scan(options);await reconcileCompletions();push();return result;});
+    // A window check names one project: an unnamed scan is the automatic check, which may turn projects on by default.
+    handle('work-recovery-scan',async options=>{if(!options||typeof options!=='object'||Array.isArray(options)||typeof options.repoId!=='string'||!options.repoId)throw new Error('Invalid request');const result=await recovery().scan(options);await reconcileCompletions();push();return result;});
     handle('work-recovery-review',async options=>{const result=await recovery().review(options);push();return result;});
     function scheduleRecovery(delay=60000){
       clearTimeout(recoveryTimer);recoveryTimer=undefined;

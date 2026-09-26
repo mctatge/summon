@@ -81,6 +81,22 @@ test('baseline avoids historical content and an unfinished old line, then captur
   assert.equal(next.events[0].cwd, fx.repo.path);
 });
 
+test('baselineBefore starts a never-read source modified before the look-back at its end; newer or saved sources read normally', async t => {
+  const fx = await fixture(t);
+  const stale = await fx.addClaude('stale history'), recent = await fx.addClaude('recent history');
+  const old = new Date(AT - 20 * 86400000), before = AT - 14 * 86400000;
+  await fs.utimes(stale.file, old, old);
+  const { sources } = await fx.reader.discover({ repo: fx.repo });
+  const of = item => sources.find(source => source.sessionId === item.sessionId);
+  const skipped = await fx.reader.readBatch(of(stale), null, { baselineBefore: before });
+  assert.deepEqual([skipped.events, skipped.eof, skipped.cursor.offset], [[], true, (await fs.stat(stale.file)).size]);
+  assert.deepEqual((await fx.reader.readBatch(of(recent), null, { baselineBefore: before })).events.map(event => event.text), ['recent history']);
+  await fs.appendFile(stale.file, jsonl(claude(stale.sessionId, fx.repo.path, 'appended later', AT + 1000)));
+  await fs.utimes(stale.file, old, old);
+  const resumed = await fx.reader.readBatch(of(stale), skipped.cursor, { baselineBefore: before });
+  assert.deepEqual(resumed.events.map(event => event.text), ['appended later']);
+});
+
 test('incremental cursors survive reader restart without duplicates', async t => {
   const fx = await fixture(t);
   const item = await fx.addClaude('first message');
@@ -286,3 +302,34 @@ test('long normalized excerpts are explicitly marked truncated and cursor stores
   assert.equal(batch.events[0].truncated, true);
   assert.ok(!JSON.stringify(batch.cursor).includes('AAAA'));
 });
+
+test('projects checked in one pass share one inventory, and descriptors carry the file size and modification time', async t => {
+  const fx = await fixture(t);
+  const other = { id: 'other', path: fx.other, places: [] };
+  const mine = await fx.addCodex([codex('mine')]), elsewhere = await fx.addCodex([codex('elsewhere')], { row: { cwd: fx.other } });
+  const pass = {}, queries = () => fx.calls.length;
+  const found = await fx.reader.discover({ repo: fx.repo, pass }), before = queries();
+  const theirs = await fx.reader.discover({ repo: other, pass });
+  assert.equal(queries(), before, 'the second project reuses the pass inventory');
+  assert.deepEqual([found.sources.map(s => s.sessionId), theirs.sources.map(s => s.sessionId)], [[mine.sessionId], [elsewhere.sessionId]]);
+  const stat = await fs.stat(mine.file);
+  assert.deepEqual([found.sources[0].size, found.sources[0].modifiedAt], [stat.size, stat.mtimeMs]);
+  assert.equal((await fx.reader.readBatch(found.sources[0], null)).events[0].text, 'mine');
+  await fx.reader.discover({ repo: fx.repo, pass: {} });
+  assert.ok(queries() > before, 'a new pass reads the inventory again');
+});
+
+test('a Claude transcript continuing another session is reported only for the project of its cwd', async t => {
+  const fx = await fixture(t);
+  const parent = id(), fork = id();
+  await fs.writeFile(path.join(fx.claudeRoot, `${fork}.jsonl`), jsonl(claude(parent, fx.other, 'continued elsewhere')));
+  const clean = await fx.reader.discover({ repo: fx.repo });
+  assert.deepEqual([clean.sources, clean.warnings, clean.truncated], [[], [], false]);
+  const inRepo = id();
+  await fs.writeFile(path.join(fx.claudeRoot, `${inRepo}.jsonl`), jsonl(claude(parent, fx.repo.path, 'continued here')));
+  const found = await fx.reader.discover({ repo: fx.repo });
+  assert.equal(found.truncated, true);
+  assert.ok(found.warnings.includes('A Claude transcript that continues another session could not be read.'));
+  assert.ok(!JSON.stringify(found).includes('continued'));
+});
+

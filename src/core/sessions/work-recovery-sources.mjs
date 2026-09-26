@@ -51,7 +51,7 @@ function rawText(content) {
 }
 
 /** Source descriptors are internal capabilities: discover before readBatch, including after a restart.
- * No activity horizon is applied. `since` is reserved for future metadata optimizations; callers filter events by time. */
+ * No activity horizon is applied here: `since` is advisory, and callers use each source's modifiedAt and filter events by time. */
 export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapshots, limits = {} } = {}) {
   if (!absolute(homeDir)) throw new Error('Recovery needs an absolute home directory.');
   const bound = { ...DEFAULTS };
@@ -60,8 +60,8 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
   bound.batchBytes = Math.max(bound.batchBytes, bound.lineBytes + 1);
   let ownedSnapshots = null;
   const getSnapshots = () => snapshots ?? (ownedSnapshots ??= createSqliteSnapshots({ run }));
-  const discovered = new Map();
-  let closed = false;
+  const discovered = new Map(), metadata = new Map();
+  let closed = false, shared = null;
   const providerPaths = {
     codex: [path.join(homeDir, '.codex', 'sessions'), path.join(homeDir, '.codex', 'archived_sessions')],
     claude: [path.join(homeDir, '.claude', 'projects')],
@@ -110,7 +110,7 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
   async function claudeMetadata(source, roots) {
     const { handle, stat } = await openSource(source, roots);
     try {
-      let found = null;
+      let found = null, other = null;
       let metadataOnly = stat.size <= bound.metadataBytes;
       const ranges = [[0, Math.min(stat.size, bound.metadataBytes)]];
       if (stat.size > bound.metadataBytes) ranges.push([Math.max(0, stat.size - bound.metadataBytes), bound.metadataBytes]);
@@ -125,54 +125,55 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
             try {
               const row = JSON.parse(bytes.toString('utf8', from, end));
               if (!CLAUDE_METADATA.has(row.type)) metadataOnly = false;
-              if (['user', 'assistant'].includes(row.type) && row.isSidechain !== true && row.isMeta !== true
-                && absolute(row.cwd) && (!row.sessionId || row.sessionId.toLowerCase() === source.sessionId)) {
-                found = { cwd: row.cwd, desktop: typeof row.entrypoint === 'string' && row.entrypoint.startsWith('claude-desktop') };
+              if (['user', 'assistant'].includes(row.type) && row.isSidechain !== true && row.isMeta !== true && absolute(row.cwd)) {
+                if (!row.sessionId || row.sessionId.toLowerCase() === source.sessionId) found = { cwd: row.cwd, desktop: typeof row.entrypoint === 'string' && row.entrypoint.startsWith('claude-desktop') };
+                else other = { cwd: row.cwd, fork: true };
               }
             } catch { metadataOnly = false; /* Unknown or incomplete lines do not provide source identity. */ }
           } else metadataOnly = false;
           from = end + 1;
         }
       }
-      return found ?? (metadataOnly ? { empty: true } : null);
+      // A file whose rows all carry another session's id continues that session; it is attributed by cwd but not read.
+      return found ?? (metadataOnly ? { empty: true } : other);
     } finally { await handle.close(); }
   }
 
-  async function discover({ repo } = {}) {
-    if (closed) throw new Error('Recovery sources are closed.');
-    const sources = [], warnings = [];
+  // Claude metadata is cached by file version; lstat never follows a final symlink, and a changed file is read again.
+  async function claudeProject(source, provider) {
+    const stat = await fs.lstat(source.file), version = `${identity(stat)}:${stat.size}:${stat.mtimeMs}`, hit = metadata.get(source.file);
+    if (stat.isFile() && hit?.version === version) return hit.value;
+    const value = await claudeMetadata(source, provider);
+    metadata.set(source.file, { version, value });
+    return value;
+  }
+
+  /** The machine-wide candidates, independent of any repository: one inventory can serve every project of a check. */
+  async function inventory() {
+    const candidates = [], warnings = [], reals = new Map();
     let truncated = false;
-    const roots = await projectRoots(repo);
-    if (!roots.length) return { sources, warnings: ['Recovery could not resolve this repository or its worktrees.'], truncated: true };
-    const retain = async (source, provider) => {
-      if (!(await scopedCwd(source.cwd, roots))) return;
-      try {
-        const opened = await openSource(source, provider);
-        await opened.handle.close();
-        if (sources.length >= bound.sources) { truncated = true; return; }
-        discovered.set(sourceKey(source), { roots, provider, cwd: source.cwd, repoId: repo.id });
-        sources.push(source);
-      } catch { warnings.push(safeWarning(source.provider)); truncated = true; }
+    const real = async cwd => {
+      if (!absolute(cwd) || sealedPath(cwd)) return null;
+      if (!reals.has(cwd)) reals.set(cwd, await fs.realpath(cwd).then(value => sealedPath(value) ? null : value, () => null));
+      return reals.get(cwd);
     };
-    // Expire only this repository's capabilities. Other repositories may be processed by the same service.
-    for (const [key, value] of discovered) if (value.repoId === repo.id) discovered.delete(key);
     try {
       const provider = await providerRoots('codex');
-      const inventory = await discoverCodexWorkTranscripts({ homeDir, run, snapshots: getSnapshots(), maxSources: bound.sources });
-      warnings.push(...inventory.warnings); truncated ||= inventory.truncated;
-      for (const source of inventory.sources) await retain(source, provider);
+      const found = await discoverCodexWorkTranscripts({ homeDir, run, snapshots: getSnapshots(), maxSources: bound.sources });
+      warnings.push(...found.warnings); truncated ||= found.truncated;
+      for (const source of found.sources) candidates.push({ source, provider, real: await real(source.cwd) });
     } catch { warnings.push('Codex recovery discovery failed.'); truncated = true; }
     try {
       const provider = await providerRoots('claude');
       const root = path.join(homeDir, '.claude', 'projects');
-      const listing = await entries(root, bound.directories);
+      const listing = await entries(root, bound.directories), listed = new Set();
       truncated ||= listing.truncated;
       let checked = 0;
       outer: for (const dir of listing.entries) {
         if (!dir.isDirectory() || sealedPath(dir.name)) continue;
         const folder = path.join(root, dir.name);
-        const real = await fs.realpath(folder);
-        if (!provider.some(item => inside(real, item.real)) || sealedPath(real)) continue;
+        const realFolder = await fs.realpath(folder);
+        if (!provider.some(item => inside(realFolder, item.real)) || sealedPath(realFolder)) continue;
         const files = await entries(folder, bound.sources + 1);
         truncated ||= files.truncated;
         for (const file of files.entries) {
@@ -181,16 +182,48 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
           if (checked++ >= bound.sources) { truncated = true; break outer; }
           const id = match[1].toLowerCase();
           const source = { provider: 'claude', sessionId: id, sessionKey: `claude:terminal:${id}`, file: path.join(folder, file.name), cwd: null };
+          listed.add(source.file);
           try {
-            const metadata = await claudeMetadata(source, provider);
-            if (metadata?.empty) continue; // No conversation yet; a future discovery checks the file again.
-            if (!metadata) { warnings.push('Some Claude recovery sources have no readable project metadata.'); truncated = true; continue; }
-            source.cwd = metadata.cwd;
-            await retain(source, provider);
-          } catch { warnings.push(safeWarning('claude')); truncated = true; }
+            const found = await claudeProject(source, provider);
+            if (found?.empty) continue; // No conversation yet; a future discovery checks the file again.
+            // Unattributable metadata counts against every project; a continued session only against the project of its cwd.
+            if (!found) { candidates.push({ failure: 'Some Claude recovery sources have no readable project metadata.', anywhere: true }); continue; }
+            if (found.fork) { candidates.push({ failure: 'A Claude transcript that continues another session could not be read.', real: await real(found.cwd) }); continue; }
+            candidates.push({ source: { ...source, cwd: found.cwd }, provider, real: await real(found.cwd) });
+          } catch { candidates.push({ failure: safeWarning('claude'), anywhere: true }); }
         }
       }
+      for (const file of metadata.keys()) if (!listed.has(file)) metadata.delete(file);
     } catch { warnings.push('Claude recovery discovery failed.'); truncated = true; }
+    return { candidates, warnings, truncated };
+  }
+
+  // `pass`: callers checking several projects in one pass share a single inventory; without it every call reads afresh.
+  async function discover({ repo, pass } = {}) {
+    if (closed) throw new Error('Recovery sources are closed.');
+    const sources = [], warnings = [];
+    const roots = await projectRoots(repo);
+    if (!roots.length) return { sources, warnings: ['Recovery could not resolve this repository or its worktrees.'], truncated: true };
+    const found = pass !== undefined && shared?.pass === pass ? shared.value : await inventory();
+    if (pass !== undefined) shared = { pass, value: found };
+    let truncated = found.truncated;
+    warnings.push(...found.warnings);
+    // Expire only this repository's capabilities. Other repositories may be processed by the same service.
+    for (const [key, value] of discovered) if (value.repoId === repo.id) discovered.delete(key);
+    for (const candidate of found.candidates) {
+      const scoped = Boolean(candidate.real) && roots.some(root => inside(candidate.real, root));
+      if (candidate.failure) { if (candidate.anywhere || scoped) { warnings.push(candidate.failure); truncated = true; } continue; }
+      if (!scoped) continue;
+      const source = { ...candidate.source };
+      try {
+        const opened = await openSource(source, candidate.provider);
+        await opened.handle.close();
+        if (sources.length >= bound.sources) { truncated = true; continue; }
+        discovered.set(sourceKey(source), { roots, provider: candidate.provider, cwd: source.cwd, repoId: repo.id });
+        // Size and modification time let the caller skip a finished, unchanged file and ignore one older than its look-back.
+        sources.push({ ...source, modifiedAt: opened.stat.mtimeMs, size: opened.stat.size });
+      } catch { warnings.push(safeWarning(source.provider)); truncated = true; }
+    }
     if (truncated) warnings.push('Recovery source discovery is incomplete; unchecked conversations have not been marked processed.');
     return { sources, warnings: [...new Set(warnings)], truncated };
   }
@@ -201,7 +234,8 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
     return { start, length: bytes.length, hash: hash(bytes) };
   }
 
-  async function readBatch(source, previous, { baseline = false } = {}) {
+  // `baselineBefore`: a never-read source last modified before that time starts at its end, exactly like `baseline`.
+  async function readBatch(source, previous, { baseline = false, baselineBefore = null } = {}) {
     if (closed) throw new Error('Recovery sources are closed.');
     const scope = discovered.get(sourceKey(source));
     if (!scope || scope.cwd !== source.cwd || !(await scopedCwd(source.cwd, scope.roots))) throw new Error('Discover and verify this recovery source before reading it.');
@@ -225,7 +259,7 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
         }
         else warnings.push('A recovery source was replaced, shortened or rewritten; reading it again with duplicate protection.');
       }
-      if (baseline) {
+      if (baseline || (!previous && Number.isFinite(baselineBefore) && stat.mtimeMs < baselineBefore)) {
         const last = stat.size ? await bytesAt(handle, stat.size - 1, 1) : null;
         cursor = { offset: stat.size, identity: identity(stat), contextCwd: source.cwd, ...(last?.[0] !== 10 && stat.size ? { skipping: true } : {}) };
         cursor.size = stat.size; cursor.mtimeMs = stat.mtimeMs;
@@ -312,5 +346,5 @@ export function createWorkRecoverySources({ homeDir = os.homedir(), run, snapsho
     } finally { await handle.close(); }
   }
 
-  return { discover, readBatch, async close() { closed = true; discovered.clear(); await ownedSnapshots?.close(); } };
+  return { discover, readBatch, async close() { closed = true; discovered.clear(); metadata.clear(); shared = null; await ownedSnapshots?.close(); } };
 }

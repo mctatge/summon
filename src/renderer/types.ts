@@ -193,7 +193,8 @@ export type AgentChild = { key: string; id: string; parentSessionKey: string; pr
 export type CrossRepoDependency = { repoId: string; goalId: string };
 export type WorkTreeSnapshot = { repos: WifRepo[]; goals: VisualGoal[]; sessions: AgentSession[]; readAt: string; warnings: string[]; externalGoals: Array<Pick<VisualGoal, 'repoId' | 'id' | 'title' | 'status'>>; externalRepos: Array<{ id: string; name: string }> };
 export type WorkRecoveryEvent = { id: string; provider: 'claude' | 'codex'; sessionKey: string; role: 'user' | 'assistant'; text: string; at: string | null; capturedAt: string; truncated: boolean; reviewedAt: string | null };
-export type WorkRecoverySnapshot = { repoId: string; enabled: boolean; enabledAt: string | null; paused: boolean; checkedAt: string | null; pending: number; total: number; sources: number; hasMore: boolean; warnings: string[]; error: string | null; items: WorkRecoveryEvent[]; nextOffset: number | null };
+// choice: null before the first automatic check turns it on; 'default' with enabled false when the project limit keeps it off.
+export type WorkRecoverySnapshot = { repoId: string; enabled: boolean; enabledAt: string | null; choice?: 'default' | 'user' | null; lookbackFrom?: string | null; paused: boolean; checkedAt: string | null; pending: number; total: number; sources: number; hasMore: boolean; warnings: string[]; error: string | null; items: WorkRecoveryEvent[]; nextOffset: number | null };
 export type VisualGoalLinks = { placeId: string | null; branch: string | null; sessionKey: string | null; component: string | null; agentId?: string | null };
 export type ContextInference = { summary: string; evidence: string[]; confidence: 'high' | 'medium' | 'low'; engine: string; model: string | null; updatedAt: string };
 export type ContextReasoningSettings = { enabled: boolean; engine: 'auto' | 'local' | 'claude' | 'codex' };
