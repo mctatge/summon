@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Teach Summon this tab</title><link rel="stylesheet" href="popup.css"></head>
+<body><main><h1>Teach Summon this tab</h1><p>Connect the current page. Summon only records your demonstration after you tell it to watch.</p>
+<form id="pair" novalidate><label for="connection">Connection copied from Summon</label><textarea id="connection" rows="3" placeholder='Paste the connection here' autocomplete="off" spellcheck="false"></textarea>
+<details><summary>Or enter connection details</summary><label for="port">Port from Summon</label><input id="port" type="number" min="1" max="65535" required autocomplete="off">
+<label for="token">Pairing token</label><input id="token" type="password" required autocomplete="off" spellcheck="false">
+</details><button id="connect" type="submit">Connect this tab</button></form><button id="disconnect" type="button" hidden>Disconnect tab</button>
+<p id="status" role="status" aria-live="polite"></p><small>One tab at a time. Connection ends when the page navigates or Summon closes.</small></main><script src="popup.js"></script></body></html>

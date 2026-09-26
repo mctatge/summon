@@ -1,0 +1,11 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Draft teaching fixture</title><style>
+body{font:16px system-ui;background:#f6f7f5;color:#283c37;max-width:700px;margin:60px auto}label{display:block;margin:24px 0 8px}input,button{font:inherit;padding:12px;border:1px solid #c8d2ca;border-radius:6px;background:white}button{cursor:pointer;margin:8px 8px 0 0}#picked{margin:30px 0;padding:20px;background:#e7eee8}h1{font-size:28px}
+</style></head><body><h1>Draft board</h1><p>Synthetic fixture for trusted browser demonstration and replay.</p>
+<label for="map">Map</label><input id="map" placeholder="Search maps" autocomplete="off"><button id="choose-map" type="button">Use map</button>
+<p id="map-status">No map selected</p><label for="brawler">Brawler</label><input id="brawler" placeholder="Search brawlers" autocomplete="off"><div id="results"></div><div id="picked">No picks yet</div>
+<script>
+const map=document.querySelector('#map'),brawler=document.querySelector('#brawler'),results=document.querySelector('#results'),picked=document.querySelector('#picked');let mapChanges=0;
+document.querySelector('#choose-map').onclick=()=>{mapChanges++;document.body.dataset.mapChanges=mapChanges;document.querySelector('#map-status').textContent='Map: '+map.value;picked.textContent='No picks yet';};
+function render(){results.replaceChildren();for(const name of ['Najia','Jessie','Shelly'].filter(name=>brawler.value&&name.toLowerCase().includes(brawler.value.toLowerCase()))){const button=document.createElement('button');button.type='button';button.textContent=name;button.onclick=()=>{if(picked.textContent==='No picks yet')picked.textContent='';const p=document.createElement('p');p.textContent='Picked: '+name;picked.append(p);brawler.value='';render();};results.append(button);}}
+brawler.addEventListener('input',render);
+</script></body></html>

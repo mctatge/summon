@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Summon — Teach this tab",
+  "description": "Show Summon a procedure in one explicitly connected tab, then reuse it with new inputs.",
+  "version": "0.1.0",
+  "minimum_chrome_version": "114",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "Teach Summon this tab"}
+}
