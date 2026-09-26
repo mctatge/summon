@@ -71,3 +71,7 @@ if (fnKey.error || fnKey.status !== 0) {
 }
 chmodSync(fnKeyBinary, 0o755);
 console.log(`Built ${fnKeyBinary}`);
+
+// Explicit teaching owns a separate helper; the activity/Fn observers stay unchanged.
+const teaching = spawnSync(process.execPath, [join(root, 'scripts', 'build-teaching-native.mjs')], {stdio:'inherit'});
+if(teaching.error || teaching.status !== 0) process.exit(teaching.status || 1);

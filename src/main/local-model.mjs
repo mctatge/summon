@@ -1,8 +1,11 @@
 // A bounded, optional interpreter. It proposes existing actions; it has no tools,
 // filesystem access, credentials, external endpoints, or execution callback.
+import {CONTEXT_REASONING_LIMITS, CONTEXT_REASONING_SYSTEM_PROMPT, validateContextReasoningRequest} from './context-engine.mjs';
+
 export const DEFAULT_LOCAL_MODEL = 'summon-local:latest';
 export const LOCAL_PORTS = Object.freeze([11434, 11435]);
 export const LOCAL_ACTIONS = Object.freeze(['find_files', 'open_calendar', 'set_project', 'show_context', 'check_models', 'clarify']);
+export const LOCAL_STRUCTURED_LIMITS = Object.freeze({ ...CONTEXT_REASONING_LIMITS, systemPromptBytes: 8_000 });
 const MAX_MODEL_BYTES = 3.5 * 1024 ** 3;
 const MAX_RESPONSE_BYTES = 128 * 1024;
 const CATEGORIES = ['', 'combined', 'coding', 'reasoning', 'speed'];
@@ -18,6 +21,7 @@ const RANK_INTENT = /\b(best|top|rank|ranked|ranks|ranking|rankings|highest|bett
 const PROJECT_INTENT = /\b(switch(?:ing)?|work(?:ing)?|focus(?:ing)?|back|select(?:ing)?|set(?:ting)?|use|using|resum(?:e|ing)|return(?:ing)?)\b/i;
 const now = () => performance.now();
 const elapsed = start => Math.round(now() - start);
+const localError = (code, message) => Object.assign(new Error(message), { code });
 const safeText = (value, max) => typeof value === 'string' && value.length <= max && !CONTROL.test(value);
 const escapeRegex = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const unsafeRequest = text => FORBIDDEN.test(text) || /^\s*(?:please\s+)?schedule\b/i.test(text) || /\b(?:and then|then|also|and)\s+(?:please\s+)?(?:open|show|find|check|switch|set|view|bring|pull)\b/i.test(text);
@@ -136,16 +140,33 @@ function modelAllowed(model) {
   return true;
 }
 
-export function createLocalInterpreter({ model = DEFAULT_LOCAL_MODEL, port = 11434, timeoutMs = 20000, fetcher = globalThis.fetch } = {}) {
+function validateStructuredRequest({ prompt, schema, systemPrompt }) {
+  const invalid = message => localError('LOCAL_INVALID_REQUEST', `${message} No cloud fallback was used.`);
+  if (typeof systemPrompt !== 'string' || !systemPrompt.trim()) throw invalid('The local structured reasoning system prompt is empty.');
+  if (Buffer.byteLength(systemPrompt) > LOCAL_STRUCTURED_LIMITS.systemPromptBytes) throw invalid('The local structured reasoning system prompt is too large.');
+  if (typeof prompt !== 'string' || !prompt.trim()) throw invalid('The local structured reasoning request is empty.');
+  if (Buffer.byteLength(prompt) > LOCAL_STRUCTURED_LIMITS.promptBytes) throw invalid('The local structured reasoning request is too large.');
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) throw invalid('The local structured reasoning answer format is missing.');
+  let schemaJson;
+  try { schemaJson = JSON.stringify(schema); }
+  catch { throw invalid('The local structured reasoning answer format is invalid.'); }
+  if (typeof schemaJson !== 'string' || Buffer.byteLength(schemaJson) > LOCAL_STRUCTURED_LIMITS.schemaBytes) throw invalid('The local structured reasoning answer format is too large.');
+}
+
+export function createLocalInterpreter({ model = DEFAULT_LOCAL_MODEL, port = 11434, timeoutMs = 20000, contextTimeoutMs = 90000, fetcher = globalThis.fetch } = {}) {
   if (!safeText(model, 180) || !model.trim()) throw new Error('Choose a local model name.');
   if (!LOCAL_PORTS.includes(port)) throw new Error('Only the fixed local Ollama ports 11434 and 11435 are supported.');
   if (!Number.isInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 45000) throw new Error('Local model timeout must be between 50 and 45,000 ms.');
+  if (!Number.isInteger(contextTimeoutMs) || contextTimeoutMs < 50 || contextTimeoutMs > 90000) throw new Error('Local context reasoning timeout must be between 50 and 90,000 ms.');
   const base = `http://127.0.0.1:${port}`;
   const controllers = new Set();
   let busy = false, closed = false, ownsLoad = false, lastHealth = null;
 
-  async function request(route, body, timeout = timeoutMs) {
+  async function request(route, body, timeout = timeoutMs, signal) {
     const controller = new AbortController(); controllers.add(controller);
+    const abort = () => controller.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) abort();
     const timer = setTimeout(() => controller.abort(), timeout);
     try {
       const response = await fetcher(`${base}${route}`, {
@@ -156,22 +177,24 @@ export function createLocalInterpreter({ model = DEFAULT_LOCAL_MODEL, port = 114
       });
       return await readJson(response);
     } catch (error) {
-      if (controller.signal.aborted) throw new Error(closed ? 'Local interpretation was cancelled because Summon is closing.' : `Local interpretation timed out after ${Math.ceil(timeout / 1000)} seconds. No action was taken.`);
+      if (signal?.aborted) throw localError('LOCAL_CANCELLED', 'Local structured reasoning was cancelled.');
+      if (controller.signal.aborted) throw localError(closed ? 'LOCAL_UNAVAILABLE' : 'LOCAL_TIMEOUT', closed ? 'Local interpretation was cancelled because Summon is closing.' : `Local interpretation timed out after ${Math.ceil(timeout / 1000)} seconds. No action was taken.`);
       if (error instanceof SyntaxError) throw new Error('The local model service returned invalid JSON.');
       throw error;
-    } finally { clearTimeout(timer); controllers.delete(controller); }
+    } finally { clearTimeout(timer); controllers.delete(controller); signal?.removeEventListener('abort', abort); }
   }
 
-  async function health() {
+  async function health({ signal } = {}) {
     if (closed) return { available: false, installed: false, loaded: false, model, version: null, error: 'Local interpreter is closed.' };
     try {
-      const [version, tags, running] = await Promise.all([request('/api/version', undefined, 2500), request('/api/tags', undefined, 2500), request('/api/ps', undefined, 2500)]);
+      const [version, tags, running] = await Promise.all([request('/api/version', undefined, 2500, signal), request('/api/tags', undefined, 2500, signal), request('/api/ps', undefined, 2500, signal)]);
       const entry = Array.isArray(tags.models) ? tags.models.find(item => item.name === model || item.model === model) : null;
       const loaded = Array.isArray(running.models) && running.models.some(item => item.name === model || item.model === model);
       const allowed = modelAllowed(entry);
       lastHealth = { available: allowed, installed: Boolean(entry), loaded, model, version: typeof version.version === 'string' ? version.version : null, error: !entry ? `${model} is not installed locally. Summon will not download it automatically.` : !allowed ? 'Choose a supported local text model under 3.5 GiB. Cloud and embedding models are not used.' : null };
       return lastHealth;
-    } catch {
+    } catch (error) {
+      if (signal?.aborted) throw error;
       lastHealth = { available: false, installed: false, loaded: false, model, version: null, error: 'Ollama is not reachable on this Mac. Start Ollama, then try again. No cloud fallback was used.' };
       return lastHealth;
     }
@@ -212,6 +235,73 @@ export function createLocalInterpreter({ model = DEFAULT_LOCAL_MODEL, port = 114
     } finally { busy = false; }
   }
 
+  // This path summarizes already collected evidence; it never proposes or
+  // executes commands. Core callers validate the returned goals and source IDs.
+  async function reasonContext({ prompt, schema } = {}) {
+    validateContextReasoningRequest({ prompt, schema });
+    if (closed) throw localError('LOCAL_UNAVAILABLE', 'The local interpreter is closed.');
+    if (busy) throw localError('LOCAL_BUSY', 'A local interpretation is already running. Please wait for it to finish.');
+    busy = true;
+    try {
+      const state = await health();
+      if (!state.available) throw localError('LOCAL_UNAVAILABLE', state.error);
+      ownsLoad ||= !state.loaded;
+      const response = await request('/api/generate', {
+        model, system: CONTEXT_REASONING_SYSTEM_PROMPT, prompt, stream: false, format: schema, keep_alive: '60s',
+        ...(model.toLowerCase().includes('qwen3') ? { think: false } : {}),
+        options: { temperature: 0, num_ctx: 8192, num_batch: 256, num_predict: 1024, seed: 42 },
+      }, contextTimeoutMs);
+      if (lastHealth) lastHealth.loaded = true;
+      if (response.prompt_eval_count >= 7168) throw localError('LOCAL_CONTEXT_LIMIT', 'The local context was too long to reason about reliably. Use less recent evidence.');
+      if (response.done !== true || response.done_reason === 'length') throw localError('LOCAL_TRUNCATED', 'The local model did not finish a usable context summary.');
+      if (typeof response.response !== 'string' || Buffer.byteLength(response.response) > CONTEXT_REASONING_LIMITS.responseBytes) throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not finish a usable context summary.');
+      let raw;
+      try { raw = JSON.parse(response.response); }
+      catch { throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not return valid context JSON.'); }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not return a context object.');
+      return { raw, model };
+    } finally { busy = false; }
+  }
+
+  // Tool-less JSON reasoning for trusted app callers. The system prompt and
+  // schema come from application code, never from observed screen content.
+  // Callers must validate the resulting object before proposing any action.
+  async function reasonStructured({ prompt, schema, systemPrompt, signal } = {}) {
+    validateStructuredRequest({ prompt, schema, systemPrompt });
+    const failure = (code, message) => localError(code, `${message} No cloud fallback was used.`);
+    if (signal !== undefined && !(signal instanceof AbortSignal)) throw failure('LOCAL_INVALID_REQUEST', 'The local structured reasoning cancellation signal is invalid.');
+    if (signal?.aborted) throw failure('LOCAL_CANCELLED', 'Local structured reasoning was cancelled.');
+    if (closed) throw failure('LOCAL_UNAVAILABLE', 'The local interpreter is closed.');
+    if (busy) throw failure('LOCAL_BUSY', 'A local interpretation is already running. Please wait for it to finish.');
+    busy = true;
+    try {
+      const state = await health({ signal });
+      if (signal?.aborted) throw localError('LOCAL_CANCELLED', 'Local structured reasoning was cancelled.');
+      if (closed) throw localError('LOCAL_UNAVAILABLE', 'The local interpreter is closed.');
+      if (!state.available) throw localError('LOCAL_UNAVAILABLE', state.error);
+      ownsLoad ||= !state.loaded;
+      const response = await request('/api/generate', {
+        model, system: systemPrompt, prompt, stream: false, format: schema, keep_alive: '60s',
+        ...(model.toLowerCase().includes('qwen3') ? { think: false } : {}),
+        options: { temperature: 0, num_ctx: 8192, num_batch: 256, num_predict: 1024, seed: 42 },
+      }, contextTimeoutMs, signal);
+      if (signal?.aborted) throw localError('LOCAL_CANCELLED', 'Local structured reasoning was cancelled.');
+      if (lastHealth) lastHealth.loaded = true;
+      if (response.prompt_eval_count >= 7168) throw localError('LOCAL_CONTEXT_LIMIT', 'The local request was too long to reason about reliably. Use less screen context.');
+      if (response.done !== true || response.done_reason === 'length') throw localError('LOCAL_TRUNCATED', 'The local model did not finish a usable structured answer.');
+      if (typeof response.response !== 'string' || Buffer.byteLength(response.response) > LOCAL_STRUCTURED_LIMITS.responseBytes) throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not finish a usable structured answer.');
+      let raw;
+      try { raw = JSON.parse(response.response); }
+      catch { throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not return valid structured JSON.'); }
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw localError('LOCAL_INVALID_RESPONSE', 'The local model did not return a structured object.');
+      return { raw, model };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Local structured reasoning failed.';
+      if (message.includes('No cloud fallback was used.')) throw error;
+      throw failure(error?.code || 'LOCAL_UNAVAILABLE', message);
+    } finally { busy = false; }
+  }
+
   async function unload() {
     if (!ownsLoad) return false;
     try { await request('/api/generate', { model, keep_alive: 0, stream: false }, 3000); ownsLoad = false; if (lastHealth) lastHealth.loaded = false; return true; }
@@ -224,7 +314,7 @@ export function createLocalInterpreter({ model = DEFAULT_LOCAL_MODEL, port = 114
     await unload();
   }
   const status = () => structuredClone(lastHealth || { available: false, installed: false, loaded: false, model, version: null, error: 'Local model availability has not been checked yet.' });
-  return { health, status, suggestCommand, unload, close };
+  return { health, status, suggestCommand, reasonContext, reasonStructured, unload, close };
 }
 
 const defaultInterpreter = createLocalInterpreter();

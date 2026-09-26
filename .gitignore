@@ -4,6 +4,7 @@ release/
 native/summon-context
 native/summon-transcribe
 native/summon-fn-key
+native/summon-teaching
 .DS_Store
 *.log
 .env*

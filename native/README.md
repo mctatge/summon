@@ -99,3 +99,87 @@ second startup before handing the app back. The cache can be invalidated by
 future updates or eviction. Merely providing `GGML_METAL_PATH_RESOURCES` does not
 bypass compilation in this embedded-source build. Production voice startup
 keeps its 20-second deadline; no permanent timeout increase is part of this fix.
+
+## Desktop teaching worker
+
+`Teaching.swift` is a separate helper built with
+`node scripts/build-teaching-native.mjs` as `summon-teaching`. The private
+`desktop-teaching-bridge.mjs` starts it lazily through the registered process
+supervisor. Its stdin/stdout protocol is newline-delimited JSON:
+`{id,method,params}` returns `{id,result}` or `{id,error}`. `permissions`, `apps`,
+and `status` do not start observation. Only the explicit `request-permissions`
+method may ask macOS for Accessibility or Input Monitoring.
+Recording status includes event/observation counts and whether a selected app
+is currently active. It includes that app's name only when it is in the allowed
+scope; an unselected app is reported as `activeApp: null` without its identity.
+
+`begin({allowedApps,excludedApps})` starts a bounded demonstration. A passive
+event tap identifies clicks and the semantic Enter, Tab, and Escape keys; it
+never retrieves or retains typed key strings. Focused Accessibility field
+values supply demonstrated text. Selected apps can be combined in one task;
+other foreground apps pause capture. This helper reads bounded visible AX
+text/control trees and values, unlike the metadata-only context helper above.
+Demonstration recording takes no screenshots. The helper makes no network
+calls and writes no files or persistent records.
+The limits are five minutes, 40 actions, and 850 KB of evidence; exceeding one
+fails the demonstration instead of silently saving an incomplete task.
+
+`configure` selects app scope for reuse without recording. `snapshot` returns
+an ephemeral revision and control IDs; `activate` focuses a selected app.
+`execute` accepts only the selected app, observed revision/control ID, and
+`fill`, `click`, or the three supported `press` values. It refreshes the AX
+tree, checks that the scene, target, and frontmost app still match, and uses
+AXSetValue/AXPress/AXConfirm where available. Supported keys require validated
+focus and are otherwise posted only to that app's PID. It never retries an AX
+action whose success is uncertain. Menu-bar controls are included. Secure
+fields, security/password apps, terminals and identified IDE command inputs
+are excluded. Consequential controls such as Send, Delete, Buy, Install and
+permission grants cannot be replayed. Enter in multiline fields is excluded
+because it can send a message in some apps.
+Executable URL schemes and browser-internal/local-file navigation are also
+blocked; ordinary HTTP/HTTPS navigation in a selected browser is supported.
+
+`configure({allowedApps,excludedApps,visualReading:true})` optionally enables
+local window text recognition for explicit snapshots/activation/execution.
+The default and an omitted flag disable it. `permissions` reports the
+read-only `screenRecording` grant; only `request-screen-recording` prompts.
+`TeachingOCR.swift` uses macOS 14+ ScreenCaptureKit for the selected foreground
+window and Vision for local OCR. Images never leave helper memory. Fresh
+captures use hashed pixel bands to reuse unchanged OCR; app/window changes,
+actions and cancellation invalidate the cache. Bounded OCR text augments AX
+evidence, and unique geometry matches can name existing unnamed AX controls.
+No image-only control or coordinate action is introduced. A complete privacy
+scan must succeed before capture; sensitive/command controls skip OCR.
+`status.visualStatus` and `visualMessage` describe the last explicit read
+without capturing. OCR is paused during demonstrations, and cancel turns it off.
+
+`finish` disarms capture and returns the demonstration; `cancel` invalidates
+queued actions immediately, clears transient evidence, and disarms the tap.
+EOF, parent death, shutdown, timeout, and malformed output stop the worker.
+AX messaging timeouts and traversal limits bound unresponsive apps. The helper
+does not bypass macOS permissions or substitute coordinate clicks when AX
+controls are unavailable. Some custom interfaces will require another adapter.
+Inspection uses short per-call limits; an individual validated control action
+has a two-second acknowledgement budget and is never automatically retried.
+Activation is requested once and waits briefly for foreground/window readiness;
+any repeated reads during settling stay inside the bounded inspection budget.
+When multiple processes share an app identifier, the active or newest visible
+regular instance is preferred to avoid an older windowless process.
+
+`node native/teaching-check.mjs` runs synthetic guards without inspecting
+another app. `node native/teaching-fixture/build.mjs` builds two isolated benign
+apps under `/private/tmp` for real permission-dependent recording and reuse
+checks; their form edits stay in memory. The catalog has a layout/label change
+button and a secure field to exercise re-resolution and exclusion. Passing
+synthetic checks does not prove a real capture or microphone interaction.
+
+The 2026-09-20 installed-app check captured a Catalog field edit, learned its
+input through the real Codex CLI, saved it, and reused Sirius as Vega. Native
+execution also filled and pressed Catalog's selection control. The UI test
+driver's clicks changed the fixture but did not reach the passive recording
+tap; the learned proposal correctly omitted that click and reuse stayed
+unverified. Physical click capture and a spoken correction still need a human
+demonstration. Cross-app activation exposed a readiness race, now fixed with
+asynchronous settling; its final live rerun was blocked when the UI test driver
+stopped delivering input after restart. Synthetic checks alone do not close
+those remaining runtime checks.
