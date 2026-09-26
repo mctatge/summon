@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { sealedPath } from './workstreams.mjs';
 
 // Hook events: what a Claude or Codex session reports about itself through scripts/summon-hook.mjs, kept per session
 // as a latest-state entry plus a bounded metadata-only event history for visual traces.
@@ -14,7 +15,7 @@ const STATES = Object.freeze(['open', 'working', 'needs-you', 'failed', 'ended']
 const LIMITS = Object.freeze({
   sessionMs: 7 * 864e5, sessions: 500, launches: 100, launchUnboundMs: 24 * 3600e3, launchBoundMs: 7 * 864e5,
   fileBytes: 262144, debounceMs: 500, eventChars: 40, toolChars: 120, kindChars: 40, pathChars: 1024, idChars: 200,
-  historyPerSession: 100, historyTotal: 2000,
+  historyPerSession: 100, historyTotal: 2000, childrenPerSession: 100,
 });
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TAG = /^[0-9a-f-]{8,64}$/;
@@ -22,7 +23,7 @@ const KIND = /^[A-Za-z0-9_:-]{1,40}$/;
 const OK = 'Waiting for your OK';
 const QUESTION = 'Asked you a question';
 const PROBLEM = 'Stopped with a problem';
-const WORKING_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'SubagentStart', 'SubagentStop', 'PreCompact', 'PostCompact']);
+const WORKING_EVENTS = new Set(['UserPromptSubmit', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied', 'PreCompact', 'PostCompact']);
 const OK_KINDS = new Set(['permission_prompt', 'worker_permission_prompt']);
 const QUESTION_KINDS = new Set(['agent_needs_input', 'elicitation_dialog', 'elicitation_url_dialog']);
 
@@ -38,11 +39,20 @@ const traceName = (value, max) => {
   const name = cleanText(value, max);
   return /^[A-Za-z][A-Za-z0-9_.:-]*$/.test(name) ? name : null;
 };
+const childId = value => typeof value === 'string' && value.length <= LIMITS.idChars && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value) ? value : null;
+const childType = value => childId(value) && value.length <= LIMITS.toolChars ? value : null;
+function pickChild(raw) {
+  if (!isObject(raw) || !childId(raw.id) || !ms(raw.updatedAt)) return null;
+  return { id: raw.id, type: childType(raw.type), cwd: absolute(raw.cwd) ? raw.cwd : null,
+    state: STATES.includes(raw.state) ? raw.state : null, stateAt: ms(raw.stateAt),
+    startedAt: ms(raw.startedAt), updatedAt: ms(raw.updatedAt), endedAt: ms(raw.endedAt) };
+}
 function pickTraceEvent(raw) {
   if (!isObject(raw)) return null;
   const id = uuidOf(raw.id), at = ms(raw.at), event = traceName(raw.event, LIMITS.eventChars);
   if (!id || !at || !event) return null;
-  return { id, at, event, toolName: traceName(raw.toolName, LIMITS.toolChars), state: STATES.includes(raw.state) ? raw.state : null };
+  return { id, at, event, toolName: traceName(raw.toolName, LIMITS.toolChars), state: STATES.includes(raw.state) ? raw.state : null,
+    ...(childId(raw.agentId) ? { agentId: raw.agentId, agentType: childType(raw.agentType) } : {}) };
 }
 
 /** The state a hook event stands for, or null when the event says nothing about the session's state. */
@@ -89,6 +99,7 @@ function pickEntry(raw) {
     state: STATES.includes(raw.state) ? raw.state : null, reason: cleanText(raw.reason, 120) || null, stateAt: ms(raw.stateAt),
     event: cleanText(raw.event, LIMITS.eventChars) || null, kind: typeof raw.kind === 'string' && KIND.test(raw.kind) ? raw.kind : null, toolName: cleanText(raw.toolName, LIMITS.toolChars) || null,
     eventAt, firstAt: firstAt ?? eventAt, events: Number.isSafeInteger(raw.events) && raw.events >= 0 ? raw.events : 0,
+    ...(Array.isArray(raw.children) ? { children: raw.children.map(pickChild).filter(Boolean).slice(-LIMITS.childrenPerSession) } : {}),
   };
 }
 function pickLaunch(raw) {
@@ -153,7 +164,11 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
   /** State and trace retention share the 7-day / 256 KiB bounds. Drop trace history before latest states. */
   function prune() {
     const at = now();
-    for (const [key, entry] of sessions) if (at - entry.eventAt > limit.sessionMs) sessions.delete(key);
+    for (const [key, entry] of sessions) {
+      if (at - entry.eventAt > limit.sessionMs) sessions.delete(key);
+      else if (entry.children) entry.children = entry.children.filter(child => at - child.updatedAt <= limit.sessionMs)
+        .sort((a, b) => a.updatedAt - b.updatedAt).slice(-limit.childrenPerSession);
+    }
     const oldestFirst = () => [...sessions.entries()].sort((a, b) => a[1].eventAt - b[1].eventAt);
     if (sessions.size > limit.sessions) for (const [key] of oldestFirst().slice(0, sessions.size - limit.sessions)) sessions.delete(key);
     for (const [tag, launch] of launches) if (at - launch.at > (launch.sessionId ? limit.launchBoundMs : limit.launchUnboundMs)) launches.delete(tag);
@@ -222,6 +237,9 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
     if (!sessionId) throw new Error('Invalid hook session id.');
     const name = cleanText(event.event, limit.eventChars);
     if (!name) throw new Error('Unknown hook event.');
+    const agentId = childId(event.agentId);
+    if (event.agentId != null && (!agentId || event.app !== 'claude')) throw new Error('Invalid hook agentId.');
+    if (event.agentType != null && (event.app !== 'claude' || !childType(event.agentType))) throw new Error('Invalid hook agentType.');
     const at = now();
     const key = `${event.app}:${sessionId}`;
     const entry = sessions.get(key) ?? emptyEntry(event.app, sessionId, at);
@@ -231,17 +249,33 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
       // The first event that carries a known tag binds that launch to this session; an unknown tag names nothing.
       if (launch && launch.app === event.app && (launch.sessionId === null || launch.sessionId === sessionId)) { launch.sessionId = sessionId; entry.launch = tag; }
     }
-    if (absolute(event.cwd)) entry.cwd = event.cwd;
+    // Child execution may happen in a different checkout. It must not move the parent session or change its state.
+    if (!agentId && absolute(event.cwd)) entry.cwd = event.cwd;
     entry.event = name;
     entry.kind = typeof event.kind === 'string' && KIND.test(event.kind) ? event.kind : null;
     entry.toolName = cleanText(event.toolName, limit.toolChars) || null;
     entry.eventAt = at;
     entry.events += 1;
-    const mapped = hookActivity(event.app, name, entry.kind);
+    const childLifecycle = name === 'SubagentStart' || name === 'SubagentStop';
+    const mapped = agentId || childLifecycle ? null : hookActivity(event.app, name, entry.kind);
+    let childState = null;
+    if (agentId) {
+      const child = entry.children?.find(child => child.id === agentId) ?? { id: agentId, type: null, cwd: null, state: null, stateAt: null, startedAt: null, updatedAt: at, endedAt: null };
+      child.type = childType(event.agentType) ?? child.type;
+      if (absolute(event.cwd)) child.cwd = event.cwd;
+      child.updatedAt = at;
+      const state = name === 'SubagentStart' ? { state: 'working' } : name === 'SubagentStop' ? { state: 'ended' } : hookActivity(event.app, name, entry.kind);
+      if (state) {
+        child.state = state.state; child.stateAt = at; childState = state.state;
+        if (state.state === 'ended') child.endedAt = at;
+        else if (name === 'SubagentStart' || name === 'SessionStart' || state.state === 'working') { child.endedAt = null; child.startedAt ??= at; }
+      }
+      entry.children = [...(entry.children ?? []).filter(value => value.id !== agentId), child];
+    }
     if (mapped) { entry.state = mapped.state; entry.reason = mapped.reason; entry.stateAt = at; }
     sessions.set(key, entry);
     const trace = history.get(key) ?? { events: [], truncated: entry.events > 1 };
-    const reported = pickTraceEvent({ id: randomUUID(), at, event: name, toolName: entry.toolName, state: mapped?.state ?? null });
+    const reported = pickTraceEvent({ id: randomUUID(), at, event: name, toolName: entry.toolName, state: childState ?? mapped?.state ?? null, agentId, agentType: event.agentType });
     if (reported) trace.events.push(reported); else trace.truncated = true;
     history.set(key, trace);
     prune();
@@ -271,6 +305,7 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
   }
 
   function forApp(app) {
+    prune();
     const out = new Map();
     for (const entry of sessions.values()) if (entry.app === app) out.set(entry.sessionId, clone(entry));
     return out;
@@ -281,7 +316,9 @@ export async function createHookLedger({ dataDir, now = Date.now, limits = {} } 
     prune();
     const id = uuidOf(sessionId), key = `${app}:${id}`;
     const kept = id && APPS.includes(app) ? history.get(key) : null;
-    return { events: (kept?.events ?? []).map(event => ({ ...event, at: new Date(event.at).toISOString(), confidence: 'reported' })), truncated: kept?.truncated === true };
+    const hidden = new Set((sessions.get(key)?.children ?? []).filter(child => sealedPath(child.cwd)).map(child => child.id));
+    return { events: (kept?.events ?? []).filter(event => !event.agentId || !hidden.has(event.agentId))
+      .map(event => ({ ...event, at: new Date(event.at).toISOString(), confidence: 'reported' })), truncated: kept?.truncated === true };
   }
 
   async function close() {

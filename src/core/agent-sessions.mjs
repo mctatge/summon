@@ -4,6 +4,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { classifyPath, hidePrivateText, sealedPath, redact } from './workstreams.mjs';
 import { createHookLedger } from './hook-events.mjs';
+import { recentContext, CONTEXT_CHARS } from './sessions/recent-context.mjs';
 
 const VERSION = 1;
 const APPS = Object.freeze(['claude', 'codex', 'cursor', 'hermes']);
@@ -188,6 +189,34 @@ function sessionWork(raw) {
 }
 
 /** Checks one reader session against the contract and keeps only known fields. */
+function sessionChildren(raw, app, parentSessionKey) {
+  if (!['claude', 'codex'].includes(app) || !Array.isArray(raw)) return [];
+  const childTime = value => epoch(typeof value === 'string' ? Date.parse(value) : value);
+  const identifier = value => typeof value === 'string' && value.length <= 450 && /^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value);
+  const rows = raw.slice(0, 100).filter(child => isObject(child) && child.provider === app && identifier(child.id)
+    && identifier(child.key) && child.key.startsWith(`${app}:`) && child.key !== parentSessionKey
+    && identifier(child.parentSessionKey) && childTime(child.updatedAt) !== null);
+  const byKey = new Map(rows.map(child => [child.key, child]));
+  const reachesParent = child => {
+    const seen = new Set([child.key]);
+    let parent = child.parentSessionKey;
+    while (parent !== parentSessionKey) {
+      if (seen.has(parent) || !byKey.has(parent)) return false;
+      seen.add(parent); parent = byKey.get(parent).parentSessionKey;
+    }
+    return true;
+  };
+  return [...byKey.values()].filter(reachesParent).map(child => ({
+    key: child.key, id: child.id, parentSessionKey: child.parentSessionKey, provider: app,
+    // Internal only: each child's own folder determines its privacy policy, even across repositories.
+    cwd: folderPath(child.cwd), worktreePath: folderPath(child.worktreePath),
+    label: clean(child.label, LIMITS.titleChars) || 'Helper',
+    activity: ACTIVITIES.includes(child.activity) ? child.activity : 'unknown',
+    confidence: child.confidence === 'reported' ? 'reported' : 'inferred',
+    startedAt: childTime(child.startedAt) === null ? null : iso(childTime(child.startedAt)), updatedAt: iso(childTime(child.updatedAt)),
+    endedAt: childTime(child.endedAt) === null ? null : iso(childTime(child.endedAt)),
+  }));
+}
 function sanitizeSession(raw, app) {
   if (!isObject(raw) || raw.app !== app || !SURFACES.includes(raw.surface)) return null;
   if (typeof raw.id !== 'string' || !raw.id || raw.id.length > LIMITS.idChars || /[\u0000-\u0020\u007f-\u009f]/.test(raw.id)) return null;
@@ -201,8 +230,10 @@ function sanitizeSession(raw, app) {
     startedAt: epoch(raw.startedAt), updatedAt: epoch(raw.updatedAt),
     activity: ACTIVITIES.includes(raw.activity) ? raw.activity : 'unknown', activitySince: epoch(raw.activitySince), reason,
     unread: raw.unread === true, archived: raw.archived === true, pinned: raw.pinned === true, live: raw.live === true,
-    confidence: raw.confidence === 'inferred' ? 'inferred' : 'reported', helpers: count(raw.helpers), model: clean(raw.model, 80) || null,
+    confidence: raw.confidence === 'inferred' ? 'inferred' : 'reported', helpers: count(raw.helpers), helpersInferred: raw.helpersInferred === undefined ? app === 'claude' : raw.helpersInferred === true, model: clean(raw.model, 80) || null,
+    children: sessionChildren(raw.children, app, `${app}:${raw.surface}:${raw.id}`),
     work: sessionWork(raw.work),
+    recentContext: recentContext(raw.recentContext?.messages),
     // Only 'user' is a claim; everything else, including a reader that says nothing, counts as the app's own wording.
     titleSource: raw.titleSource === 'user' ? 'user' : 'auto',
     // Full paths of the files this session edited, newest first. Names only: no reader ever sends their contents.
@@ -959,8 +990,21 @@ export async function createAgentSessions({
       record.folder = await resolveFolder(record.session, settings, places, projects);
     });
     const kept = records.filter(record => !record.folder.drop);
+    const childPrivacy = new Map();
+    // One bounded shared scope check per child, even when a nested child appears under several ancestors.
+    const scopedChildren = [...new Map(kept.flatMap(record => record.session.children.map(child => [child.key, child]))).values()].slice(0, 200);
+    await pool(scopedChildren, limit.resolveConcurrency, async child => {
+      const original = child.worktreePath || child.cwd;
+      if (!original) { childPrivacy.set(child.key, null); return; }
+      const lexical = applyAliases(original, settings.pathAliases);
+      if (sealedPath(lexical)) { childPrivacy.set(child.key, { hidden: true }); return; }
+      const folder = { lexical, ...(await realInfo(lexical)) };
+      if (sealedPath(folder.real)) { childPrivacy.set(child.key, { hidden: true }); return; }
+      childPrivacy.set(child.key, maskingFor({ folder, ...joinPlace(folder, places, projects) }));
+    });
     for (const record of kept) {
       Object.assign(record, joinPlace(record.folder, places, projects));
+      record.childPrivacy = childPrivacy;
       const prefixes = prefixesFor(record.repoPath);
       const touched = touchedFor(record, settings, prefixes);
       const matched = streamFor(touched, record.placeStreams);
@@ -1013,9 +1057,9 @@ export async function createAgentSessions({
     };
   }
 
-  function publicSession(record, group, forAgent) {
+  function publicSession(record, group, forAgent, includeContext) {
     const { session, words, target } = record;
-    const masking = forAgent ? maskingFor(record) : null;
+    const masking = forAgent || includeContext ? maskingFor(record) : null;
     let title = session.title;
     let fallback = false;
     if (forAgent) title = agentTitle(record, masking);
@@ -1025,14 +1069,28 @@ export async function createAgentSessions({
     // The row leads with where the session is, not with the app's own title: a machine title can be swapped between
     // two sessions, a project and a piece of work cannot. A private folder says neither.
     const headline = forAgent && masking.hidden ? HIDDEN_HEADLINE : headlineFor(record, streamHeadline(work), record.project, record.headlineExtra);
+    const visibleChildKeys = new Set(session.children.filter(child => record.childPrivacy.has(child.key)
+      && !record.childPrivacy.get(child.key)?.hidden).map(child => child.key));
+    const children = sessionChildren(session.children.filter(child => visibleChildKeys.has(child.key)), session.app, record.key)
+      .map(({ cwd, worktreePath, ...child }) => {
+        const ownPrivacy = record.childPrivacy.get(child.key);
+        const label = ownPrivacy ? ownPrivacy.mask(child.label, LIMITS.titleChars)
+          : masking ? masking.mask(child.label, LIMITS.titleChars) : clean(redact(child.label), LIMITS.titleChars);
+        return { ...child, label: label || 'Helper' };
+      });
     return {
       key: record.key, app: session.app, surface: session.surface, appLabel: appLabel(session.app, session.surface), title, titleIsFallback: fallback,
       headline, titleIsAuto: session.titleSource !== 'user',
+      // Internal reasoning opts in; ordinary UI, CLI and MCP reads retain their metadata-only contract.
+      // Excerpts are always masked, including local reads, so no later consumer can bypass this boundary.
+      ...(includeContext ? { recentContext: masking.hidden ? null : recentContext(session.recentContext?.messages.map(item => ({ ...item, text: masking.mask(item.text, CONTEXT_CHARS) }))) } : {}),
       project: record.project, placeId: record.placeId, repoId: record.repoId, placeLabel: record.placeLabel,
       folder: forAgent || !record.folder.real ? null : displayPath(record.folder.real), branch: session.branch,
       group, activity: session.activity, reason: words.reason, stateText: words.stateText, sinceText: words.sinceText,
       sinceAt: words.sinceAt === null ? null : iso(words.sinceAt), updatedAt: session.updatedAt === null ? null : iso(session.updatedAt),
       unread: session.unread, pinned: session.pinned, live: session.live, confidence: session.confidence, helpers: session.helpers,
+      ...(session.helpers > 0 ? { helpersInferred: session.helpersInferred } : {}),
+      ...(children.length && !(forAgent && masking.hidden) ? { children } : {}),
       startedFrom: session.origin,
       // A session in a private folder says nothing about its work to an agent, counts included.
       work: work ? { ...work } : null, workText: workTextFor(work, forAgent && masking.hidden ? '' : record.touchedText),
@@ -1076,7 +1134,7 @@ export async function createAgentSessions({
     return { ...work, area: work.area === null ? null : mask(work.area, 80), workstream, workstreamState: workstream ? work.workstreamState : null };
   }
 
-  function viewFor(snapshot, forAgent, { app = null, includeRecent = false } = {}) {
+  function viewFor(snapshot, forAgent, { app = null, includeRecent = false, includeContext = false } = {}) {
     let groups = snapshot.groups;
     let totals = { ...snapshot.totals };
     let sources = snapshot.sources;
@@ -1110,7 +1168,7 @@ export async function createAgentSessions({
     const summary = { needsYou: totals.needsYou, working: totals.working, backgroundWorking, text: sessionSummaryText(totals) };
     return {
       version: VERSION, checkedAt: iso(snapshot.at), totals, summary,
-      groups: groups.map(group => ({ id: group.id, title: group.title, sessions: group.records.map(record => publicSession(record, group.id, forAgent)) })),
+      groups: groups.map(group => ({ id: group.id, title: group.title, sessions: group.records.map(record => publicSession(record, group.id, forAgent, includeContext)) })),
       sources: sources.map(source => ({ ...source, label: text(source.label), detail: source.detail === null ? null : text(source.detail) })),
       byPlace: clone(snapshot.byPlace), settings, warnings,
     };
@@ -1118,11 +1176,12 @@ export async function createAgentSessions({
 
   // maxAgeMs: Infinity answers from the last check whenever there is one (main uses it while no window shows the data).
   // app and includeRecent narrow the view; includeRecent keeps the recent group in agent-facing reads.
-  async function read({ maxAgeMs = 3000, forAgent = false, app = null, includeRecent = false } = {}) {
+  async function read({ maxAgeMs = 3000, forAgent = false, app = null, includeRecent = false, includeContext = false } = {}) {
     if (typeof maxAgeMs !== 'number' || !(maxAgeMs >= 0)) throw new Error('maxAgeMs must be zero or more.');
     if (typeof forAgent !== 'boolean') throw new Error('forAgent must be true or false.');
     if (app !== null && !APPS.includes(app)) throw new Error('app must be claude, codex, cursor or hermes.');
     if (typeof includeRecent !== 'boolean') throw new Error('includeRecent must be true or false.');
+    if (typeof includeContext !== 'boolean') throw new Error('includeContext must be true or false.');
     if (closing) throw new Error('Summon is closing. Try again after it restarts.');
     const ticket = ++requests;
     await enqueue(readState);
@@ -1147,7 +1206,7 @@ export async function createAgentSessions({
     }
     lastTargets = snapshot.targets;
     lastTraceTargets = snapshot.traceTargets;
-    return viewFor(snapshot, forAgent, { app, includeRecent });
+    return viewFor(snapshot, forAgent, { app, includeRecent, includeContext });
   }
 
   // The last check's per-folder counts, and nothing else: this never starts a check, never touches a file and never

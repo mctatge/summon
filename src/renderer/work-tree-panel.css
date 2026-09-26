@@ -1,0 +1,13 @@
+.work-tree-panel { margin-top:20px; min-width:0; }
+.work-tree-panel-tools { display:flex; align-items:center; flex-wrap:wrap; gap:16px; padding:0 8px 12px; font-size:12px; color:var(--ink-secondary); }
+.work-tree-panel-tools > span { margin-right:auto; font-weight:550; color:var(--ink); }
+.work-tree-loading { display:grid; place-content:center; justify-items:center; gap:16px; min-height:360px; background:var(--paper-raised); border-radius:24px; font-size:13px; }
+.work-tree-error { margin:12px 0; color:var(--warning); font-size:13px; }
+.work-tree-notice { margin:12px 8px; color:var(--ink-secondary); font-size:12px; }
+.work-tree-inspector { width:min(540px,calc(100vw - 32px)); max-height:calc(100dvh - 48px); overflow-y:auto; border:0; border-radius:24px; padding:24px; color:var(--ink); background:var(--paper-raised); box-shadow:0 24px 100px var(--shadow-ink); --vw-muted:var(--ink-secondary); --vw-pot:var(--success); --vw-border:var(--receipt-line); }
+.work-tree-inspector::backdrop { background:var(--backdrop); backdrop-filter:blur(3px); }
+.work-tree-inspector > header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; font-size:12px; color:var(--ink-secondary); }
+.work-tree-inspector h2 { font-size:22px; line-height:1.35; letter-spacing:-.5px; margin-bottom:12px; }
+.work-tree-status { color:var(--ink-secondary); font-size:12px; margin-bottom:16px; }
+.work-tree-inspector .vw-inspector-section { margin-top:20px; }
+.work-tree-inspector > p { font-size:13px; margin:12px 0; }

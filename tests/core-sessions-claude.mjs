@@ -75,10 +75,10 @@ function desktopRecord(id, cli, extra = {}, { tail = {}, padFirst = false } = {}
   return JSON.stringify(body);
 }
 function userLine(ts, extra = {}) {
-  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'user', message: { role: 'user', content: 'SECRET-USER-TEXT please' }, uuid: `u-${ts}`, timestamp: iso(ts), ...extra };
+  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'user', message: { role: 'user', content: 'Please fix the session list' }, uuid: `u-${ts}`, timestamp: iso(ts), ...extra };
 }
 function assistantLine(ts, stop, extra = {}) {
-  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'assistant', message: { id: 'm', model: 'claude-opus-5', role: 'assistant', content: [{ type: stop === 'tool_use' ? 'tool_use' : 'text', text: 'SECRET-USER-TEXT reply' }], stop_reason: stop }, uuid: `a-${ts}`, timestamp: iso(ts), ...extra };
+  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'assistant', message: { id: 'm', model: 'claude-opus-5', role: 'assistant', content: [{ type: stop === 'tool_use' ? 'tool_use' : 'text', text: 'The session list is updated' }], stop_reason: stop }, uuid: `a-${ts}`, timestamp: iso(ts), ...extra };
 }
 
 // The app's own diff counts, keyed '<local id>:owner/repo:branch'. Only numbers are ever stored here.
@@ -198,7 +198,7 @@ async function mainFixture(t) {
     assistantLine(NOW - 3 * MIN, 'tool_use'),
   ]));
   await write(path.join(summon, `${T.T2}.jsonl`), jsonl([userLine(NOW - 2 * MIN), assistantLine(NOW - 90000, 'tool_use'), userLine(NOW - 5000, { toolUseResult: { stdout: 'SECRET-USER-TEXT' } })]));
-  const filler = jsonl(Array.from({ length: 400 }, (_, i) => userLine(NOW - 5 * HOUR + i, { message: { role: 'user', content: `SECRET-OLD-TEXT ${'y'.repeat(150)}` } })));
+  const filler = jsonl(Array.from({ length: 400 }, (_, i) => userLine(NOW - 5 * HOUR + i, { message: { role: 'user', content: [{ type: 'tool_result', content: `SECRET-OLD-TEXT ${'y'.repeat(150)}` }] } })));
   await write(path.join(summon, `${T.T3}.jsonl`), filler + jsonl([
     { type: 'ai-title', aiTitle: 'Tail title', sessionId: T.T3 },
     userLine(NOW - 2 * HOUR - MIN),
@@ -260,6 +260,29 @@ function spyFs(t) {
 const byId = result => new Map(result.sessions.map(item => [item.id, item]));
 const deps = processes => ({ processes, isAlive, readLocalStorageKeys: readKeys });
 
+test('Claude provider children retain lifecycle separately from parent and unknown is not completion', async t => {
+  const f = await mainFixture(t);
+  const reader = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
+  const child = (id, extra = {}) => ({ id, type: 'Explore', cwd: f.worktree, state: 'working', stateAt: NOW - MIN,
+    startedAt: NOW - 2 * MIN, updatedAt: NOW - MIN, endedAt: null, ...extra });
+  const hook = { state: 'working', stateAt: NOW - 1000, children: [child('live'), child('ended', { state: 'ended', endedAt: NOW - 1000 }),
+    child('stale', { updatedAt: NOW - HOUR }), child('private', { cwd: '/Users/x/sealed-client/project' })] };
+  const result = byId(await reader.read({ hookStates: new Map([[CLI.A, hook]]) }));
+  const parent = result.get(D.A);
+  assert.equal(parent.activity, 'working');
+  assert.equal(parent.helpers, 2, 'desktop hook overrides still retain the separately inferred transcript count');
+  assert.deepEqual(parent.children.map(row => [row.id, row.activity, row.confidence]), [
+    ['live', 'working', 'reported'], ['ended', 'quiet', 'reported'], ['stale', 'unknown', 'inferred'],
+  ]);
+  assert.equal(parent.children[0].parentSessionKey, `claude:desktop:${D.A}`);
+  assert.equal(parent.children[0].key, `claude:child:${CLI.A}:live`);
+  assert.equal(parent.children[1].endedAt, iso(NOW - 1000));
+  assert.equal(parent.children[2].endedAt, null, 'silence never invents a stop or task completion');
+  assert.ok(!JSON.stringify(parent.children).includes('sealed-client'));
+  const after = byId(await reader.read({ hookStates: new Map([[CLI.A, { ...hook, state: 'ended', stateAt: NOW + 1 }]]) }));
+  assert.equal(after.get(D.A).children[0].activity, 'unknown', 'a stopped parent is not evidence its child completed');
+});
+
 test('Claude reader: desktop, registry, unread, worktree and terminal sessions', async t => {
   const f = await mainFixture(t);
   const reader = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
@@ -268,7 +291,7 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
   const s = byId(result);
 
   // A: live, busy, unread, pinned, worktree from git-worktrees.json, two live helpers.
-  assert.deepEqual(s.get(D.A), {
+  assert.deepEqual(Object.fromEntries(Object.entries(s.get(D.A)).filter(([key]) => key !== 'recentContext')), {
     app: 'claude', surface: 'desktop', id: D.A, title: 'Fix share links', hookSessionId: U(1), origin: null, titleSource: 'auto', cwd: f.worktree, worktreePath: f.worktree, branch: 'claude/upbeat-raman',
     startedAt: NOW - HOUR, updatedAt: NOW - 2 * MIN, activity: 'working', activitySince: NOW - 12 * MIN, reason: null,
     unread: true, archived: false, pinned: true, live: true, confidence: 'reported', helpers: 2, model: 'claude-opus-5',
@@ -310,7 +333,7 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
   for (const id of [D.G, D.H, D.I, D.L, D.M, D.N, D.Z, D.Q]) assert.equal(s.has(id), false, id);
 
   // Terminal: live busy session with custom title, branch and model from the tail.
-  assert.deepEqual(s.get(T.T1), {
+  assert.deepEqual(Object.fromEntries(Object.entries(s.get(T.T1)).filter(([key]) => key !== 'recentContext')), {
     app: 'claude', surface: 'terminal', id: T.T1, title: 'Rename wins', origin: null, titleSource: 'user', cwd: '/Users/someone/Projects/Summon', worktreePath: null, branch: 'feature/x',
     startedAt: NOW - 2 * HOUR, updatedAt: NOW - 3 * MIN, activity: 'working', activitySince: NOW - 3 * MIN, reason: null,
     unread: false, archived: false, pinned: false, live: true, confidence: 'reported', helpers: 0, model: 'claude-opus-5',
@@ -351,7 +374,7 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
   ]);
 });
 
-test('Claude reader: never reads secrets, private folders or message text, and never writes', async t => {
+test('Claude reader: never exposes secrets, private folders or tool output, and never writes', async t => {
   const f = await mainFixture(t);
   // A file-history line names a file and points at the backup that holds its contents. The name may be used; the
   // backup under ~/.claude/file-history/ never is.
@@ -950,4 +973,34 @@ test('Claude reader: hook states win over older or inferred records, an ended re
   assert.deepEqual(before(U(406)), ['working', null, 'reported', true, null]);
   assert.deepEqual(before(LOCAL(407)), ['working', null, 'reported', true, null]);
   assert.deepEqual(before(U(408)), ['needs-you', 'Waiting for your OK', 'reported', true, null]);
+});
+
+test('Claude recent context follows later desktop turns and excludes metadata, summaries, tools and thinking', async t => {
+  const f = await mainFixture(t);
+  const reader = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
+  const file = path.join(f.harbor, `${CLI.A}.jsonl`);
+  const first = byId(await reader.read()).get(D.A);
+  assert.equal(first.recentContext.messages[0].text, 'Please fix the session list');
+  await fs.appendFile(file, jsonl([
+    ...Array.from({ length: 8 }, (_, i) => userLine(NOW - 8000 + i * 100, { entrypoint: 'claude-desktop', message: { role: 'user', content: `Current goal step ${i}` } })),
+    userLine(NOW - 1000, { isMeta: true, message: { content: 'SECRET metadata' } }),
+    userLine(NOW - 900, { isCompactSummary: true, message: { content: 'SECRET compaction' } }),
+    userLine(NOW - 800, { message: { content: '# AGENTS.md instructions for /repo\nSECRET instructions' } }),
+    userLine(NOW - 700, { message: { content: [{ type: 'tool_result', content: 'SECRET output' }] } }),
+    assistantLine(NOW - 600, 'end_turn', { message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'SECRET reasoning' }, { type: 'text', text: 'Now implementing evolving goals' }], stop_reason: 'end_turn' } }),
+  ]));
+  const changed = byId(await reader.read()).get(D.A);
+  assert.equal(changed.title, first.title, 'reader preserves native names for the reasoning overlay');
+  assert.equal(changed.recentContext.messages.length, 6);
+  assert.equal(changed.recentContext.messages.at(-2).text, 'Current goal step 7');
+  assert.equal(changed.recentContext.messages.at(-1).text, 'Now implementing evolving goals');
+  assert.equal(changed.recentContext.updatedAt, NOW - 600);
+  assert.doesNotMatch(JSON.stringify(changed.recentContext), /SECRET|Please fix the session list/);
+  await fs.appendFile(file, jsonl(Array.from({ length: 8 }, (_, i) => assistantLine(NOW + i, 'end_turn', {
+    message: { role: 'assistant', content: [{ type: 'text', text: `Progress update ${i}` }], stop_reason: 'end_turn' },
+  }))));
+  const busy = byId(await reader.read()).get(D.A).recentContext;
+  assert.equal(busy.messages.length, 6);
+  assert.deepEqual(busy.messages.map(item => item.text), ['Current goal step 7', 'Progress update 3', 'Progress update 4', 'Progress update 5', 'Progress update 6', 'Progress update 7']);
+  assert.equal(busy.updatedAt, NOW + 7);
 });

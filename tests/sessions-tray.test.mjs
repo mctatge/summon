@@ -57,7 +57,7 @@ async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
   const missing=async()=>{throw new Error('Synthetic fixture has no optional files.');};
   const source=(await readFile(sourceURL,'utf8')).replace(/^import .*;\n/gm,'').replaceAll('import.meta.url',JSON.stringify(sourceURL.href));
   vm.runInNewContext(source,{
-    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:template=>template,setApplicationMenu:noop},screen:{},
+    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:template=>template,setApplicationMenu:noop},screen:{},nativeTheme:{shouldUseDarkColors:false,on:noop,removeListener:noop},
     // Several owners listen to the same power events (the count, the Fn helper); the fake calls them all.
     powerMonitor:{on:(event,handler)=>{const list=power.get(event)?.handlers||[];list.push(handler);power.set(event,Object.assign(()=>{for(const fn of list)fn();},{handlers:list}));}},
     nativeImage:{createFromBitmap:()=>({setTemplateImage:noop,star:true}),createEmpty:()=>({star:false})},
@@ -71,6 +71,11 @@ async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
     readFile:missing,writeFile:noop,mkdir:noop,stat:missing,access:missing,chmod:noop,lstat:async()=>({isDirectory:()=>true}),
     createWorkInFlight:async()=>({read:async()=>({}),group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
     createAgentSessions:async()=>core,sessionSummaryText,
+    // This harness isolates the metadata count; context reasoning is unavailable here and exercised by usage-rpc.
+    createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
+    createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
+    createContextReasoning:async()=>null,runContextReasoning:()=>assert.fail('The tray never runs a reasoning model.'),
+    createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,
@@ -80,6 +85,7 @@ async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
     createWakeDetector:()=>({status:()=>({}),start:async()=>{},stop:async()=>{}}),createSpeaker:()=>({status:()=>({}),start:async()=>{},stop:async()=>{},verify:async()=>({verified:true,score:1,elapsedMs:0}),beginEnrollment:async()=>({minSamples:10}),enrollAudio:async()=>({count:1,elapsedMs:0}),finishEnrollment:async()=>({saved:true,samples:0}),cancelEnrollment(){}}),createFnKeyMonitor:options=>{fnMonitors.push(options);return {status:()=>'off',start(){fnStarts++;},poke(){},stop(){fnStops++;}};},FN_KEY_ERROR_MESSAGE:'fn-error',createBenchmark:()=>noop,
     askEngine:async()=>({text:''}),createRpcServer:async()=>async()=>{},run:missing,scrubbedEnv:()=>({}),executable:missing,stopProcesses:async()=>{},
     // The usage meter and engine choice: stubbed so no timer or CLI of theirs runs in this lifecycle.
+    createTaskRouter:async ({ask,selectEngine,getUsage,getSettings})=>({choose:task=>selectEngine({task,usage:getUsage(),settings:getSettings()}),answer:(engine,text,snapshot,options)=>ask(engine,text,snapshot,options),close:async()=>{}}),
     createUsage:async()=>({status:()=>({version:1,settings:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},refreshing:[],problem:null}),settings:()=>({usageCeiling:85,defaultEngine:'claude'}),refresh:async()=>({}),updateSettings:async()=>({}),start:noop,pause:noop,resume:noop,stop:noop,close:async()=>{}}),usageText:()=>'',readClaudeUsage:missing,readCodexUsage:missing,chooseEngine:()=>({engine:'claude',reason:'stub'}),spawnLongLived:missing,
     loadSealedSegments:()=>[],
     createLauncher:()=>({launch:()=>assert.fail('Nothing launches at startup.'),installClaudeHooks:()=>assert.fail('Nothing installs hooks at startup.'),hookStatus:async()=>({claude:{installed:false,current:false}})}),

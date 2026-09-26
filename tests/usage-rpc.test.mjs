@@ -45,9 +45,11 @@ test('the socket serves the meter and the engine choice, read-only, with every o
     assert.deepEqual(calls,{claude:1,codex:2});assert.equal(one.result.providers.codex.status,'ok');
     for(const bad of [{method:'usage',refresh:'yes'},{method:'usage',provider:'gemini'}])assert.match((await ask(socketPath,bad)).error,/Invalid/);
     const pick=await ask(socketPath,{method:'pick-engine',task:'group these changes'});
-    assert.deepEqual(Object.keys(pick.result),['engine','reason','usage']);
+    assert.deepEqual(Object.keys(pick.result),['engine','reason','profile','effort','usage']);
     assert.equal(pick.result.engine,'codex');assert.match(pick.result.reason,/7-day window/);assert.equal(pick.result.usage.providers.claude.status,'ok');
-    assert.equal((await ask(socketPath,{method:'pick-engine',task:'x',engine:'claude'})).result.reason,'pinned');
+    assert.equal(pick.result.profile.kind,'general');assert.equal(pick.result.effort,'medium');
+    const pinned=await ask(socketPath,{method:'pick-engine',task:'debug a race condition',engine:'claude'});
+    assert.equal(pinned.result.engine,'claude');assert.match(pinned.result.reason,/pinned/);assert.equal(pinned.result.profile.kind,'coding');assert.equal(pinned.result.effort,'high');
     assert.equal((await ask(socketPath,{method:'pick-engine'})).result.engine,'codex','task is optional over the socket');
     for(const bad of [{method:'pick-engine',task:42},{method:'pick-engine',task:'x'.repeat(501)},{method:'pick-engine',engine:'gemini'}])assert.match((await ask(socketPath,bad)).error,/Invalid/);
     assert.match((await ask(bareSocket,{method:'usage'})).error,/not available/);
@@ -77,7 +79,7 @@ test('the socket serves the meter and the engine choice, read-only, with every o
     assert.equal(text(replies.get(3)).providers.codex.plan,'plus');
     assert.equal(text(replies.get(4)).providers.claude.status,'ok');assert.deepEqual(calls,{claude:2,codex:2},'refresh with a provider asks that CLI only');
     const picked=text(replies.get(5));
-    assert.deepEqual(Object.keys(picked),['engine','reason','usage']);assert.equal(picked.engine,'codex');
+    assert.deepEqual(Object.keys(picked),['engine','reason','profile','effort','usage']);assert.equal(picked.engine,'codex');assert.equal(picked.profile.kind,'writing');assert.equal(picked.effort,'medium');
     for(const [id,pattern] of [[6,/task must be/],[7,/Invalid refresh/],[8,/Invalid engine/],[9,/Invalid option later/]]){assert.equal(replies.get(id).result.isError,true);assert.match(replies.get(id).result.content[0].text,pattern);}
     const older=await mcp(bareSocket,[{jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'usage',arguments:{}}},{jsonrpc:'2.0',id:2,method:'tools/call',params:{name:'pick_engine',arguments:{task:'x'}}}]);
     for(const id of [1,2]){assert.equal(older.get(id).result.isError,true);assert.match(older.get(id).result.content[0].text,/not available in this Summon version/);}
@@ -91,6 +93,8 @@ async function launch(){
   const missing=async()=>{throw new Error('Synthetic fixture has no optional files.');};
   const executable=async name=>`/synthetic/bin/${name}`,spawnLongLived=()=>assert.fail('No CLI is spawned in this lifecycle.');
   const ctx={handlers:new Map(),trays:[],power:new Map(),asks:[],choices:[],readerOptions:{},usageOptions:null,rpcOptions:null,core:null,window:null,health:[],executable,spawnLongLived};
+  ctx.reasoning={stored:{enabled:false,engine:'auto'},calls:[],closed:0,read(){return {settings:{...this.stored}};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},decorateSessions(view){this.calls.push(['decorate',view]);return view;},async close(){this.closed++;}};
+  ctx.sessionReads=[];ctx.flightReads=[];ctx.inferences=[];ctx.projectReads=[];ctx.localAvailable=false;
   ctx.core={calls:[],stored:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},started:0,paused:0,resumed:0,stopped:0,closed:0,
     status(){return {version:1,settings:{...this.stored},providers:this.providers,refreshing:[],problem:null};},
     settings(){return {...this.stored};},
@@ -110,37 +114,55 @@ async function launch(){
   const sourceURL=new URL('../src/main/main.mjs',import.meta.url);
   const source=(await readFile(sourceURL,'utf8')).replace(/^import .*;\n/gm,'').replaceAll('import.meta.url',JSON.stringify(sourceURL.href));
   vm.runInNewContext(source,{
-    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:template=>template,setApplicationMenu:noop},screen:{},
+    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:template=>template,setApplicationMenu:noop},screen:{},nativeTheme:{shouldUseDarkColors:false,on:noop,removeListener:noop},
     powerMonitor:{on:(event,handler)=>{const list=ctx.power.get(event)?.handlers||[];list.push(handler);ctx.power.set(event,Object.assign(()=>{for(const fn of list)fn();},{handlers:list}));}},
     nativeImage:{createFromBitmap:()=>({setTemplateImage:noop,star:true}),createEmpty:()=>({star:false})},
     ipcMain:{handle:(name,handler)=>ctx.handlers.set(name,handler)},shell:{},dialog:{showErrorBox:(_title,message)=>assert.fail(message)},
     globalShortcut:{register:()=>true,unregisterAll:noop},session:{defaultSession:{setPermissionRequestHandler:noop,setPermissionCheckHandler:noop}},systemPreferences:{},safeStorage:{},clipboard:{},
     spawn:()=>assert.fail('Paused observation must remain paused.'),
     readFile:missing,writeFile:noop,mkdir:noop,stat:missing,access:missing,chmod:noop,lstat:missing,
-    createWorkInFlight:async()=>({read:async()=>({}),group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
-    createAgentSessions:async()=>({read:async()=>({}),openTarget:async()=>assert.fail('No session is opened.'),settings:()=>({}),updateSettings:async()=>({}),close:async()=>{}}),sessionSummaryText:()=>'',
-    createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
+    createWorkInFlight:async()=>({read:async options=>{ctx.flightReads.push(options);return {repos:[{id:'demo',path:'/demo'}]};},group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
+    createAgentSessions:async()=>({read:async options=>{ctx.sessionReads.push(options);return {groups:[]};},openTarget:async()=>assert.fail('No session is opened.'),settings:()=>({}),updateSettings:async()=>({}),close:async()=>{}}),sessionSummaryText:()=>'',
+    createVisualWorkspace:async()=>({explicitGoals:id=>[{repoId:id,title:'Ship the current goal'}],read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
+    createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
+    createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
+    createContextReasoning:async options=>{ctx.reasoningOptions=options;return ctx.reasoning;},runContextReasoning:async(engine,request,deps)=>{ctx.inferences.push({engine,request,deps});return {raw:{goals:[],sessions:[]},model:'synthetic'};},
     createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,
-    createCompanion:async()=>service,classifyCommand:noop,createCommandSession:()=>({}),createKnowledge:async()=>({snapshot:()=>({}),refreshSources:async()=>{},search:async()=>[]}),
-    createLocalInterpreter:()=>({status:()=>({}),health:async()=>{},close:async()=>{}}),createWakeDetector:()=>({status:()=>({}),start:async()=>{},stop:async()=>{}}),
+    createCompanion:async()=>service,classifyCommand:noop,createCommandSession:()=>({}),createKnowledge:async()=>({snapshot:()=>({}),refreshSources:async()=>{},search:async()=>[],projectContext:async(id,options)=>{ctx.projectReads.push([id,options]);return [{projectId:id,kind:'project-note',text:'Pending project follow-up'}];}}),
+    createLocalInterpreter:()=>({status:()=>({}),health:async()=>({available:ctx.localAvailable}),close:async()=>{}}),createWakeDetector:()=>({status:()=>({}),start:async()=>{},stop:async()=>{}}),
     createSpeaker:()=>({status:()=>({}),start:async()=>{},stop:async()=>{},verify:async()=>({verified:true,score:1,elapsedMs:0}),beginEnrollment:async()=>({minSamples:10}),enrollAudio:async()=>({count:1,elapsedMs:0}),finishEnrollment:async()=>({saved:true,samples:0}),cancelEnrollment(){}}),
     createFnKeyMonitor:()=>({status:()=>'off',start(){},poke(){},stop(){}}),FN_KEY_ERROR_MESSAGE:'fn-error',createBenchmark:()=>noop,
-    askEngine:async(engine,textValue,snapshot)=>{ctx.asks.push([engine,textValue,Boolean(snapshot.knowledgeContext)]);return {text:`answer from ${engine}`};},
+    askEngine:async(engine,textValue,snapshot,options)=>{ctx.asks.push([engine,textValue,Boolean(snapshot.knowledgeContext),options]);return {text:`answer from ${engine}`};},
     createRpcServer:async(_service,_socket,options)=>{ctx.rpcOptions=options;return async()=>{};},
     run:missing,scrubbedEnv:()=>({}),executable,stopProcesses:async()=>{},spawnLongLived,
+    createTaskRouter:async options=>{
+      ctx.routerOptions=options;
+      const choose=task=>options.selectEngine({task,usage:options.getUsage(),settings:options.getSettings()});
+      ctx.router={calls:[],closed:0,choose,
+        async preview(engine,text,request){this.calls.push(['preview',engine,text,request]);return choose({engine,text,...request});},
+        async answer(engine,text,snapshot,request){this.calls.push(['answer',engine,text,request]);const choice=choose({engine,text,...request});return {...await options.ask(choice.engine,text,snapshot,request),...choice};},
+        async feedback(id,rating){this.calls.push(['feedback',id,rating]);return {count:1,rated:1,problem:null};},
+        async clear(){this.calls.push(['clear']);return {count:0,rated:0,problem:null};},
+        async close(){this.closed++;},
+      };
+      return ctx.router;
+    },
     createUsage:async options=>{ctx.usageOptions=options;return ctx.core;},usageText,
     readClaudeUsage:async options=>{ctx.readerOptions.claude=options;return 'claude-read';},readCodexUsage:async options=>{ctx.readerOptions.codex=options;return 'codex-read';},
-    chooseEngine:options=>{ctx.choices.push(options);return {engine:'codex',reason:'synthetic choice'};},
-    loadSealedSegments:()=>[],
+    chooseEngine:options=>{ctx.choices.push(options);return options.task?.engine&&options.task.engine!=='auto'?{engine:options.task.engine,reason:'pinned'}:{engine:'codex',reason:'synthetic choice'};},
+    loadSealedSegments:()=>[],sealedPath:()=>false,
+    createWorkRecoverySources:async()=>({close:async()=>{}}),
+    createWorkRecovery:async()=>({read:async()=>({}),setEnabled:async()=>({}),scan:async()=>null,review:async()=>({}),userMessages:async()=>[],close:async()=>{}}),
+    createCompletionReconciler:()=>({run:async()=>({reported:[],skipped:[],errors:[]})}),
     createLauncher:()=>({launch:()=>assert.fail('Nothing launches.'),installClaudeHooks:()=>assert.fail('Nothing installs hooks.'),hookStatus:async()=>({claude:{installed:false,current:false}})}),
     setTimeout,clearTimeout,URL,Buffer,console,
     process:{env:{},resourcesPath:'/private/tmp/synthetic-resources',umask:noop},
   },{filename:fileURLToPath(sourceURL)});
   await shown;
   for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));
-  ctx.app=app;
+  ctx.app=app;ctx.state=state;
   ctx.call=(name,...args)=>ctx.handlers.get(`summon:${name}`)({sender:ctx.window.webContents,senderFrame:ctx.window.webContents.mainFrame},...args);
   return ctx;
 }
@@ -168,15 +190,16 @@ test('main wires the meter into startup, power events, IPC, Ask Auto, the tray m
   // Ask Auto: the choice is asked with the meter's reading and settings, and the chosen engine answers.
   const auto=await ctx.call('ask','auto','What changed?');
   assert.deepEqual(plain(auto),{text:'answer from codex',engine:'codex',reason:'synthetic choice'});
-  assert.deepEqual(plain(ctx.choices),[{task:{engine:'auto'},usage:ctx.core.status(),settings:{usageCeiling:70,defaultEngine:'claude'}}]);
+  assert.deepEqual(plain(ctx.choices),[{task:{engine:'auto',text:'What changed?'},usage:ctx.core.status(),settings:{usageCeiling:70,defaultEngine:'claude'}}]);
   const pinned=await ctx.call('ask','claude','What changed?');
   assert.deepEqual(plain(pinned),{text:'answer from claude',engine:'claude',reason:'pinned'});
-  assert.deepEqual(ctx.asks.map(([engine])=>engine),['codex','claude']);assert.equal(ctx.choices.length,1,'a named engine never consults the choice');
+  assert.deepEqual(ctx.asks.map(([engine])=>engine),['codex','claude']);assert.equal(ctx.choices.length,2,'a named engine reaches the same router, which keeps the explicit choice');
+  assert.deepEqual(plain(ctx.choices.at(-1).task),{engine:'claude',text:'What changed?'});
 
   // The socket gets the same meter and the same rule.
   assert.equal(ctx.rpcOptions.usage,ctx.core);
   assert.deepEqual(plain(ctx.rpcOptions.pickEngine({engine:'auto'})),{engine:'codex',reason:'synthetic choice'});
-  assert.equal(ctx.choices.length,2);
+  assert.equal(ctx.choices.length,3);
 
   // The standard tray menu carries two read-only rows and Refresh usage, rebuilt when the meter changes.
   const tray=ctx.trays.find(item=>item.image?.star===true);
@@ -196,4 +219,105 @@ test('main wires the meter into startup, power events, IPC, Ask Auto, the tray m
   ctx.app.quit();
   for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));
   assert.equal(ctx.core.stopped,1,'quitting stops the loop');assert.equal(ctx.core.closed,1,'and waits for a read in flight');
+  assert.equal(ctx.router.closed,1,'shutdown flushes routing outcomes');
+});
+
+test('main opts into conversation evidence only for reasoning, routes engines and keeps inference off the socket', async () => {
+  const ctx = await launch();
+  try {
+    assert.deepEqual(ctx.health.filter(value => value.errors), []);
+    assert.deepEqual(ctx.inferences, [], 'startup never calls an inference adapter');
+    assert.equal(ctx.reasoningOptions.dataDir, '/private/tmp/synthetic-summon-data');
+    await ctx.call('agent-sessions');
+    assert.equal(ctx.sessionReads.at(-1).includeContext, false, 'disabled reasoning leaves session polling metadata-only');
+    await ctx.call('context-reasoning', { refresh: true });
+    assert.deepEqual(plain(ctx.reasoning.calls.at(-1)), ['request', { force: true }]);
+    await ctx.call('context-reasoning', { repoId: 'demo', refresh: true });
+    assert.deepEqual(plain(ctx.reasoning.calls.at(-1)), ['request', { force: true, repoId: 'demo' }]);
+    await ctx.call('context-reasoning', { release: true });
+    assert.deepEqual(plain(ctx.reasoning.calls.at(-1)), ['release']);
+    await assert.rejects(ctx.call('context-reasoning', { repoId: {} }), /Invalid request/);
+    await assert.rejects(ctx.call('context-reasoning', { refresh: 'yes' }), /Invalid request/);
+    await assert.rejects(ctx.call('context-reasoning', { includeContext: true }), /Invalid request/);
+    for (const name of ['context-reasoning', 'context-reasoning-settings']) {
+      const handler = ctx.handlers.get(`summon:${name}`);
+      await assert.rejects(handler({ sender: {}, senderFrame: ctx.window.webContents.mainFrame }, {}), /Untrusted/);
+      await assert.rejects(handler({ sender: ctx.window.webContents, senderFrame: {} }, {}), /Untrusted/);
+    }
+    await ctx.call('context-reasoning-settings', { enabled: true, engine: 'auto' });
+    await ctx.call('agent-sessions');
+    assert.equal(ctx.sessionReads.at(-1).includeContext, true, 'enabled reasoning opts into session evidence for evolving names');
+    assert.equal(ctx.reasoning.calls.at(-1)[0], 'decorate');
+
+    const evidence = await ctx.reasoningOptions.getInput();
+    assert.deepEqual(plain(ctx.sessionReads.at(-1)), { maxAgeMs: 3000, forAgent: true, includeRecent: true, includeContext: true }, 'model evidence uses the masked agent view');
+    assert.deepEqual(plain(ctx.flightReads.at(-1)), { maxAgeMs: 60000 });
+    assert.deepEqual(plain(evidence.explicitGoals), [{ repoId: 'demo', title: 'Ship the current goal' }]);
+    const scope = ctx.reasoningOptions.getScope();
+    ctx.state.settings.paused = false;
+    assert.notEqual(ctx.reasoningOptions.getScope(), scope, 'observation permission changes invalidate the reasoning scope');
+    ctx.state.projects = [{id:'demo-project',name:'Demo',path:'/demo'},{id:'other',name:'Other',path:'/other'}];
+    const scoped = await ctx.reasoningOptions.getInput({repoId:'demo'});
+    assert.deepEqual(plain(ctx.projectReads.at(-1)), ['demo-project',{limit:8}]);
+    assert.deepEqual(plain(scoped.projectNotes), [{projectId:'demo-project',kind:'project-note',text:'Pending project follow-up'}]);
+    await assert.rejects(ctx.reasoningOptions.getInput({repoId:'unknown'}), /known repository/);
+    await ctx.call('ask', 'claude', 'Now focus on evolving goal names');
+    assert.equal((await ctx.reasoningOptions.getInput()).utterances.at(-1).text, 'Now focus on evolving goal names');
+    await ctx.call('context-reasoning-settings', { enabled: false });
+    assert.equal((await ctx.reasoningOptions.getInput()).utterances.length, 0, 'turning reasoning off clears captured phrases');
+    await ctx.call('agent-sessions');
+    assert.equal(ctx.sessionReads.at(-1).includeContext, false);
+
+    const choicesBeforeLocal=ctx.choices.length;
+    ctx.localAvailable = true;
+    assert.equal(await ctx.reasoningOptions.selectEngine(), 'local');
+    assert.equal(ctx.choices.length, choicesBeforeLocal, 'healthy local reasoning does not consult cloud engine selection');
+    ctx.localAvailable = false;
+    assert.equal(await ctx.reasoningOptions.selectEngine(), 'codex');
+    assert.deepEqual(plain(ctx.choices.at(-1)), { usage: ctx.core.status(), settings: ctx.core.settings() });
+    const request = { prompt: 'Synthetic evidence', schema: { type: 'object' } };
+    await ctx.reasoningOptions.infer('claude', request);
+    assert.equal(ctx.inferences.at(-1).engine, 'claude');
+    assert.equal(ctx.inferences.at(-1).request, request);
+    assert.equal(ctx.inferences.at(-1).deps.executable, ctx.executable);
+    assert.equal(typeof ctx.inferences.at(-1).deps.localModel.health, 'function');
+    assert.ok(!Object.values(ctx.rpcOptions).includes(ctx.reasoning), 'no model reasoning service is exposed over RPC/MCP');
+    assert.ok(!Object.keys(ctx.rpcOptions).some(key => /reasoning|contextEngine/.test(key)));
+  } finally {
+    ctx.app.quit();
+    for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(ctx.reasoning.closed, 1, 'shutdown closes the reasoning service');
+});
+
+test('main routes previews, effort overrides and feedback through the trusted window only',async()=>{
+  const ctx=await launch();
+  try{
+    assert.equal(ctx.routerOptions.dataDir,'/private/tmp/synthetic-summon-data');
+    assert.equal(ctx.routerOptions.getUsage().settings.usageCeiling,85);
+    assert.deepEqual(plain(ctx.routerOptions.getSettings()),{usageCeiling:85,defaultEngine:'claude'});
+    assert.equal(typeof ctx.routerOptions.benchmark,'function');
+    const task='debug a race condition';
+    const preview=await ctx.call('route-preview','auto',task,{effort:'high'});
+    assert.deepEqual(plain(preview),{engine:'codex',reason:'synthetic choice'});
+    assert.deepEqual(plain(ctx.router.calls.at(-1)),['preview','auto',task,{effort:'high'}]);
+    assert.deepEqual(plain(ctx.choices.at(-1).task),{engine:'auto',text:task,effort:'high'});
+    assert.equal(ctx.asks.length,0,'a preview does not ask a model');
+    await ctx.call('ask','claude',task,{effort:'low'});
+    assert.deepEqual(plain(ctx.router.calls.at(-1)),['answer','claude',task,{effort:'low'}]);
+    assert.deepEqual(plain(ctx.asks.at(-1)),['claude',task,true,{effort:'low'}]);
+    assert.deepEqual(plain(await ctx.call('route-feedback','route-id','useful')),{count:1,rated:1,problem:null});
+    assert.deepEqual(plain(ctx.router.calls.at(-1)),['feedback','route-id','useful']);
+    assert.deepEqual(plain(await ctx.call('route-history-clear')),{count:0,rated:0,problem:null});
+    for(const [name,args] of [['route-preview',['auto',task]],['route-feedback',['route-id','useful']],['route-history-clear',[]]]){
+      const handler=ctx.handlers.get(`summon:${name}`),before=ctx.router.calls.length;
+      await assert.rejects(handler({sender:{},senderFrame:ctx.window.webContents.mainFrame},...args),/Untrusted/);
+      await assert.rejects(handler({sender:ctx.window.webContents,senderFrame:{}},...args),/Untrusted/);
+      assert.equal(ctx.router.calls.length,before,'untrusted routing messages never reach the router');
+    }
+    assert.ok(!Object.values(ctx.rpcOptions).includes(ctx.router),'feedback and execution remain off the read-only socket');
+  }finally{
+    ctx.app.quit();
+    for(let i=0;i<8;i++)await new Promise(resolve=>setImmediate(resolve));
+  }
 });

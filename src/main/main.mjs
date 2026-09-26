@@ -1,4 +1,4 @@
-import {app,BrowserWindow,ipcMain,Tray,Menu,nativeImage,shell,dialog,globalShortcut,session,systemPreferences,safeStorage,powerMonitor} from 'electron';
+import {app,BrowserWindow,ipcMain,Tray,Menu,nativeImage,nativeTheme,shell,dialog,globalShortcut,session,systemPreferences,safeStorage,powerMonitor} from 'electron';
 import {spawn} from 'node:child_process';
 import {readFile,writeFile,mkdir,stat,access,chmod} from 'node:fs/promises';
 import {homedir} from 'node:os';
@@ -13,6 +13,16 @@ import {lstat} from 'node:fs/promises';
 import {GIT_ENV} from '../core/git-scan.mjs';
 import {createAgentSessions,sessionSummaryText} from '../core/agent-sessions.mjs';
 import {createVisualWorkspace} from '../core/visual-workspace.mjs';
+import {createWorkRecovery} from '../core/work-recovery.mjs';
+import {createWorkRecoverySources} from '../core/sessions/work-recovery-sources.mjs';
+import {createCompletionReconciler} from '../core/goal-completion.mjs';
+import {createContextReasoning} from '../core/context-reasoning.mjs';
+import {runContextReasoning} from './context-engine.mjs';
+import {createBrowserTeaching} from './browser-teaching.mjs';
+import {createBrowserTeachingBridge} from './browser-teaching-bridge.mjs';
+import {createDesktopTeaching} from './desktop-teaching.mjs';
+import {createDesktopTeachingBridge} from './desktop-teaching-bridge.mjs';
+import {createTeaching} from './teaching.mjs';
 import {clipboard} from 'electron';
 import {createLocalInterpreter} from './local-model.mjs';
 import {createDesktopVoice} from './desktop-voice.mjs';
@@ -25,11 +35,12 @@ import {runGrouping} from './workstream-engine.mjs';
 import {createTranscriber} from './transcription.mjs';
 import {createRpcServer} from './rpc.mjs';
 import {createLauncher} from './launcher.mjs';
-import {loadSealedSegments} from '../core/workstreams.mjs';
+import {loadSealedSegments,sealedPath} from '../core/workstreams.mjs';
 import {createUsage,usageText} from '../core/usage.mjs';
 import {readClaudeUsage} from './usage-claude.mjs';
 import {readCodexUsage} from './usage-codex.mjs';
 import {chooseEngine} from './engine-choice.mjs';
+import {createTaskRouter} from './task-router.mjs';
 import {run,scrubbedEnv,executable,stopProcesses,spawnLongLived} from './process.mjs';
 
 process.umask(0o077);app.setName('Summon');
@@ -41,10 +52,15 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
   let workInFlight;
   let agentSessions;
   let visualWorkspace;
+  let workRecovery,recoverySources,recoveryTimer,recoveryAsleep=false;
+  let contextReasoning,reasoningTimer,reasoningAsleep=false;
+  let teaching;
+  const recentInputs=[];
+  const noteInput=text=>{if(typeof text==='string'&&text.trim()&&!service.snapshot().settings.paused&&contextReasoning?.read().settings.enabled){recentInputs.push({text:text.slice(0,2000),projectId:service.snapshot().currentProjectId,at:Date.now()});while(recentInputs.length>6)recentInputs.shift();}};
   // Starts claude or codex in Terminal on a click; see launcher.mjs and docs/decisions.md 2026-09-19.
   let launcher;
   // The usage meter: what each CLI says about its own subscription windows; see src/core/usage.mjs and docs/decisions.md 2026-09-19.
-  let usage,refreshTrayMenu=()=>{};
+  let usage,taskRouter,refreshTrayMenu=()=>{};
   // Set once the menu-bar count is running; quitting stops its timer and takes the item out of the menu bar.
   let stopStatus;
   const pendingRequests=new Set();
@@ -54,7 +70,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
   const dataDir=app.getPath('userData');
   // Sealed folders: path segments Summon never reads, opens or launches into, from <dataDir>/sealed.json ({"segments":[...]}) on this machine; nothing is shipped and the applied list is never shown.
   loadSealedSegments(dataDir,{warn:message=>console.error(message)});
-  const snapshot=()=>({...service.snapshot(),benchmark:benchmarkData,knowledge:knowledge?.snapshot(),localModel:localModel?.status(),wake:wake?.status(),speaker:speaker?.status(),fnKey:fnKey?{status:fnKey.status()}:undefined,usage:usage?.status(),settings:{...service.snapshot().settings,benchmarkKeyConfigured:keyConfigured},dataDir});
+  const snapshot=()=>({...service.snapshot(),teaching:teaching?.brief?.(),benchmark:benchmarkData,knowledge:knowledge?.snapshot(),localModel:localModel?.status(),wake:wake?.status(),speaker:speaker?.status(),fnKey:fnKey?{status:fnKey.status()}:undefined,usage:usage?.status(),settings:{...service.snapshot().settings,benchmarkKeyConfigured:keyConfigured},dataDir});
   const push=()=>{if(service&&window&&!window.isDestroyed())window.webContents.send('summon:update',snapshot());voiceControl?.publish();};
   const revealWindow=()=>{if(window&&!window.isDestroyed()){if(window.webContents.isCrashed?.())window.webContents.reload();window.show();window.focus();}else if(window){app.relaunch();app.quit();}};
   const trusted=event=>Boolean(window&&event.sender===window.webContents&&event.senderFrame===window.webContents.mainFrame);
@@ -111,6 +127,11 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     try{const bootstrap=JSON.parse(await readFile(path.join(dataDir,'bootstrap.json'),'utf8'));for(const project of (bootstrap.projects||[]).slice(0,30)){if(typeof project.path==='string'&&path.isAbsolute(project.path)&&!service.snapshot().projects.some(p=>p.path===project.path))await service.addProject(project);}}catch{}
     knowledge=await createKnowledge({dataDir,projects:service.snapshot().projects,validateCommand:classifyCommand});
     localModel=createLocalInterpreter();
+    const desktopTeachingBridge=createDesktopTeachingBridge({binary:app.isPackaged?path.join(process.resourcesPath,'summon-teaching'):path.join(root,'native/summon-teaching')});
+    teaching=createTeaching({
+      desktop:await createDesktopTeaching({dataDir,bridge:desktopTeachingBridge,localModel,onChange:push,excludedApps:()=>service.snapshot().settings.excludedApps??[],requestPermissions:()=>desktopTeachingBridge.request('request-permissions')}),
+      browser:await createBrowserTeaching({dataDir,bridge:createBrowserTeachingBridge({onChange:()=>teaching?.connectionChanged()}),onChange:push}),onChange:push,
+    });
     transcriber=createTranscriber({workerPath:transcriptionPath});
     wake=createWakeDetector({dataDir,workerPath:app.isPackaged?path.join(process.resourcesPath,'wake/wake-worker.py'):path.join(root,'native/wake/wake-worker.py')});
     speaker=createSpeaker({dataDir,workerPath:app.isPackaged?path.join(process.resourcesPath,'speaker/speaker-worker.py'):path.join(root,'native/speaker/speaker-worker.py')});
@@ -119,12 +140,19 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     try{await access(transcriptionPath);await access(service.snapshot().settings.whisperModel);await service.setHealth({whisper:true});}catch{await service.setHealth({whisper:false});}
     keyConfigured=Boolean(await getKey());
     benchmark=createBenchmark({dataDir,getKey,onUpdate:value=>{benchmarkData=value;push();}});
-    window=new BrowserWindow({width:1120,height:790,minWidth:760,minHeight:600,title:'Summon',titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},backgroundColor:'#f6f7f5',show:false,webPreferences:{preload:path.join(root,'src/main/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
+    // Native chrome and CSS prefers-color-scheme both follow macOS. Match the
+    // renderer canvas before its first paint and whenever the system changes.
+    nativeTheme.themeSource='system';
+    const windowBackground=()=>nativeTheme.shouldUseDarkColors?'#191b1a':'#eaeae8';
+    window=new BrowserWindow({width:1120,height:790,minWidth:760,minHeight:600,title:'Summon',titleBarStyle:'hiddenInset',trafficLightPosition:{x:18,y:18},backgroundColor:windowBackground(),show:false,webPreferences:{preload:path.join(root,'src/main/preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,backgroundThrottling:false}});
+    const updateWindowBackground=()=>{if(!window.isDestroyed())window.setBackgroundColor(windowBackground());};
+    nativeTheme.on('updated',updateWindowBackground);
+    window.on('closed',()=>nativeTheme.removeListener('updated',updateWindowBackground));
     window.on('close',event=>{if(!quitting){event.preventDefault();window.hide();}});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
     window.webContents.on('will-navigate',event=>event.preventDefault());
-    session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details)=>callback(contents===window.webContents&&details.isMainFrame===true&&permission==='media'&&details.mediaTypes?.length===1&&details.mediaTypes[0]==='audio'));
-    session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details)=>contents===window.webContents&&details.isMainFrame===true&&permission==='media'&&details.mediaType==='audio');
+    session.defaultSession.setPermissionRequestHandler((contents,permission,callback,details)=>callback(contents===window.webContents&&details.isMainFrame===true&&(permission==='fullscreen'||permission==='media'&&details.mediaTypes?.length===1&&details.mediaTypes[0]==='audio')));
+    session.defaultSession.setPermissionCheckHandler((contents,permission,_origin,details)=>contents===window.webContents&&details.isMainFrame===true&&(permission==='fullscreen'||permission==='media'&&details.mediaType==='audio'));
     voiceControl=createDesktopVoice({powerMonitor,mainWindow:window,onStateChange:value=>{
       const active=value.micActive===true;
       if(tray){tray.setImage(active?trayIcons.listening:trayIcons.off);tray.setToolTip(active?'Summon · microphone listening locally':'Summon · microphone off');refreshTrayMenu();}
@@ -139,7 +167,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     },getHealth:()=>({wake:wake.status().available&&wake.status().loaded,whisper:service.snapshot().health.whisper})});
     handle('snapshot',snapshot);
     handle('show-window',revealWindow);
-    commands=createCommandSession({service,knowledge,openCalendar,openBenchmark:()=>openLink('benchmark'),fetchBenchmark:benchmark,openFile});
+    commands=createCommandSession({service,knowledge,openCalendar,openBenchmark:()=>openLink('benchmark'),fetchBenchmark:benchmark,openFile,launchAgent:options=>launcher.launch(options)});
     // Work in flight: read-only git status; grouping runs only on an explicit request (panel, CLI or agent tool).
     const sendWorkInFlight=()=>{if(!quitting&&workInFlight)workInFlight.read({maxAgeMs:60000}).then(view=>{if(!quitting&&window&&!window.isDestroyed())window.webContents.send('summon:work-in-flight',view);}).catch(()=>{});};
     try{workInFlight=await createWorkInFlight({dataDir,homeDir:homedir(),getProjects:async()=>service.snapshot().projects,run,git:await executable('git').catch(()=>'/usr/bin/git'),env:scrubbedEnv(GIT_ENV),group:(engine,request)=>runGrouping(engine,request,{executable,run,scrubbedEnv}),onChange:sendWorkInFlight,
@@ -159,8 +187,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     try{agentSessions=await createAgentSessions({dataDir,homeDir:homedir(),run,getPlaces:async()=>workInFlight?.places?.()??[],getProjects:async()=>service.snapshot().projects,privatePathsFor:p=>workInFlight?.settings?.().privatePaths?.[p]||[]});}catch(error){service.setHealth({errors:[`Agent sessions: ${error.message}`]});}
     const sessions=()=>{if(!agentSessions)throw new Error('Agent sessions are not available right now.');return agentSessions;};
     // Starting a session: trusted-window IPC only. No RPC, MCP or CLI path reaches these three handlers.
-    launcher=createLauncher({dataDir,homeDir:homedir(),root,resourcesPath:process.resourcesPath,isPackaged:app.isPackaged,run,executable,getProjects:async()=>service.snapshot().projects,agentSessions});
-    handle('agent-launch',options=>{const {app:engine,projectId}=flightOptions(options,{app:'string',projectId:'string'});return launcher.launch({app:engine,projectId});});
+    launcher=createLauncher({dataDir,homeDir:homedir(),root,resourcesPath:process.resourcesPath,isPackaged:app.isPackaged,run,executable,getProjects:async()=>service.snapshot().projects,agentSessions,benchmark});
+    handle('agent-launch',options=>{const {app:engine,projectId,task,modelPreference,effort}=flightOptions(options,{app:'string',projectId:'string',task:'string',modelPreference:'string',effort:'string'});return launcher.launch({app:engine,projectId,...(task!==undefined?{task}:{}),...(modelPreference!==undefined?{modelPreference}:{}),...(effort!==undefined?{effort}:{})});});
     handle('claude-hooks-install',()=>launcher.installClaudeHooks());
     handle('claude-hooks-status',()=>launcher.hookStatus());
     // Opening builds the target in core from the last read; main re-checks the scheme and the app that handles it.
@@ -168,17 +196,91 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     // The window keeps its timers running while hidden (backgroundThrottling is off), so polls from a hidden window get the last check.
     const sessionsShown=()=>Boolean(window&&!window.isDestroyed()&&window.isVisible()&&!window.isMinimized());
     try{visualWorkspace=await createVisualWorkspace({dataDir,run,git:await executable('git').catch(()=>'/usr/bin/git'),env:scrubbedEnv(GIT_ENV),
-      getWorkInFlight:()=>flight().read({maxAgeMs:20000}),getAgentSessions:()=>sessions().read({maxAgeMs:sessionsShown()?3000:Infinity}),
+      getWorkInFlight:()=>flight().read({maxAgeMs:20000}),getAgentSessions:async()=>{const view=await sessions().read({maxAgeMs:sessionsShown()?3000:Infinity,includeContext:contextReasoning?.read().settings.enabled===true});return contextReasoning?.decorateSessions(view)??view;},getReasoning:()=>contextReasoning?.read()??null,
       traceSession:key=>sessions().trace(key),getPrivatePaths:repoPath=>workInFlight?.settings?.().privatePaths?.[repoPath]||[]});
     }catch(error){service.setHealth({errors:[`Visual workspace: ${error.message}`]});}
     const visuals=()=>{if(!visualWorkspace)throw new Error('Visual workspace is not available right now.');return visualWorkspace;};
     handle('visual-repository',(repoId,options)=>visuals().read(validId(repoId),options));
     handle('visual-goal-save',input=>visuals().saveGoal(input));
-    handle('agent-sessions',async options=>{const refresh=flightOptions(options,{refresh:'boolean'}).refresh===true;const view=await sessions().read({maxAgeMs:refresh?0:sessionsShown()?3000:Infinity});
+    handle('work-tree',(options={})=>visuals().readTree(options));
+    // Opt-in per-project recovery reads local conversation records without a model,
+    // independently of the visible panel. Enabling/scanning/reviewing stays window-only.
+    try{
+      recoverySources=await createWorkRecoverySources({homeDir:!app.isPackaged&&process.env.SUMMON_TEST_HOME?path.resolve(process.env.SUMMON_TEST_HOME):homedir(),run});
+      workRecovery=await createWorkRecovery({dataDir,getRepositories:async()=>(await flight().read({maxAgeMs:20000})).repos,
+        sourceReader:recoverySources,privatePathsFor:repoPath=>workInFlight?.settings?.().privatePaths?.[repoPath]||[],
+        isPaused:()=>quitting||recoveryAsleep||service.snapshot().settings.paused});
+    }catch(error){await Promise.resolve().then(()=>recoverySources?.close?.()).catch(()=>{});recoverySources=undefined;service.setHealth({errors:[`Work recovery: ${error.message}`]});}
+    const recovery=()=>{if(!workRecovery)throw new Error('Work recovery is not available right now.');return workRecovery;};
+    // The user's own recovered words may report an open goal as needs-verification, never done; see docs/decisions.md 2026-09-23.
+    let completions=null;
+    try{if(workRecovery&&visualWorkspace)completions=createCompletionReconciler({
+      listMessages:async()=>{const open=new Set(((await flight().read({maxAgeMs:20000})).repos??[]).filter(repo=>!sealedPath(repo.path)).map(repo=>repo.id));return (await workRecovery.userMessages()).filter(entry=>open.has(entry.repoId));},
+      readGoals:repoId=>visualWorkspace.explicitGoals(repoId),saveGoal:patch=>visualWorkspace.saveGoal(patch,{actor:'agent'}),
+      isPaused:()=>quitting||recoveryAsleep||service.snapshot().settings.paused});}catch(error){service.setHealth({errors:[`Goal completion: ${error.message}`]});}
+    const completionErrors=new Set();
+    async function reconcileCompletions(){
+      if(!completions||quitting||recoveryAsleep||service.snapshot().settings.paused)return;
+      let errors=[];
+      try{const result=await completions.run();errors=result.errors.map(error=>`Goal completion: ${error}`);if(result.reported.length)push();}
+      catch(error){errors=[`Goal completion: ${error.message}`];}
+      // A later clean pass clears this path's earlier errors; each pass retries on its own.
+      if(errors.length){for(const error of errors)completionErrors.add(error);service.setHealth({errors});}
+      else if(completionErrors.size){service.setHealth({resolved:[...completionErrors]});completionErrors.clear();}
+    }
+    handle('work-recovery',options=>recovery().read(options));
+    handle('work-recovery-enabled',async options=>{const result=await recovery().setEnabled(options);push();return result;});
+    handle('work-recovery-scan',async options=>{const result=await recovery().scan(options);await reconcileCompletions();push();return result;});
+    handle('work-recovery-review',async options=>{const result=await recovery().review(options);push();return result;});
+    function scheduleRecovery(delay=60000){
+      clearTimeout(recoveryTimer);recoveryTimer=undefined;
+      if(quitting||recoveryAsleep||!workRecovery)return;
+      recoveryTimer=setTimeout(async()=>{
+        recoveryTimer=undefined;
+        try{if(!service.snapshot().settings.paused){await recovery().scan({});await reconcileCompletions();}}
+        catch(error){service.setHealth({errors:[`Work recovery: ${error.message}`]});}
+        finally{scheduleRecovery();}
+      },delay);
+      recoveryTimer.unref?.();
+    }
+    powerMonitor.on('suspend',()=>{recoveryAsleep=true;clearTimeout(recoveryTimer);recoveryTimer=undefined;});
+    powerMonitor.on('resume',()=>{recoveryAsleep=false;scheduleRecovery(5000);});
+    const reasoningScope=()=>JSON.stringify([service.snapshot().projects,service.snapshot().settings.paused,service.snapshot().settings.activityEnabled,service.snapshot().settings.accessibilityEnabled,service.snapshot().settings.excludedApps,workInFlight?.settings?.(),agentSessions?.settings?.()]);
+    try{contextReasoning=await createContextReasoning({dataDir,getScope:reasoningScope,getSelectedRepoId:()=>service.snapshot().currentProjectId??null,
+      getInput:async({repoId=null}={})=>{
+        const [flightView,sessionView]=await Promise.all([flight().read({maxAgeMs:60000}),sessions().read({maxAgeMs:3000,forAgent:true,includeRecent:true,includeContext:true})]);
+        const state=service.snapshot(),repos=(flightView.repos??[]).filter(repo=>repoId===null||repo.id===repoId);
+        if(repoId!==null&&!repos.length)throw new Error('Choose a known repository for goal reasoning.');
+        let projectNotes=[];
+        if(!state.settings.paused){
+          await refreshKnowledge();
+          // Exact registered mappings only; the global view reads a bounded
+          // selection of hubs, with Working in first. Never discover new paths.
+          const projectIds=repos.map(repo=>state.projects.find(project=>project.path===repo.path)?.id).filter(Boolean).sort((a,b)=>Number(b===state.currentProjectId)-Number(a===state.currentProjectId)).slice(0,repoId===null?4:1);
+          for(const projectId of projectIds)projectNotes.push(...await knowledge.projectContext(projectId,{limit:repoId===null?4:8}));
+        }
+        return {flight:flightView,sessions:sessionView,snapshot:state,projectNotes,explicitGoals:repos.flatMap(repo=>visualWorkspace?.explicitGoals(repo.id)??[]),utterances:recentInputs,privatePaths:workInFlight?.settings?.().privatePaths??{}};
+      },
+      infer:(engine,request)=>runContextReasoning(engine,request,{localModel,executable,run,scrubbedEnv}),
+      selectEngine:async()=>{const local=await localModel.health();return local.available?'local':chooseEngine({usage:usage?.status(),settings:usage?.settings?.()}).engine;}});
+    }catch(error){service.setHealth({errors:[`Context reasoning: ${error.message}`]});}
+    const reasoning=()=>{if(!contextReasoning)throw new Error('Context reasoning is not available right now.');return contextReasoning;};
+    handle('context-reasoning',options=>{
+      const value=options??{};
+      if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!['refresh','repoId','release'].includes(key))||(value.refresh!==undefined&&typeof value.refresh!=='boolean')||(value.release!==undefined&&typeof value.release!=='boolean')||(value.repoId!==undefined&&value.repoId!==null&&(typeof value.repoId!=='string'||!value.repoId||value.repoId.length>200)))throw new Error('Invalid request');
+      if(value.release===true)return reasoning().releaseFocus();
+      return reasoning().request({force:value.refresh===true,...(value.repoId!==undefined?{repoId:value.repoId}:{})});
+    });
+    handle('context-reasoning-settings',async patch=>{const view=await reasoning().updateSettings(patch);if(!view.settings.enabled)recentInputs.length=0;else reasoning().poll();return view;});
+    function scheduleReasoning(delay=60000){clearTimeout(reasoningTimer);if(quitting||reasoningAsleep||!contextReasoning)return;reasoningTimer=setTimeout(()=>{reasoningTimer=undefined;if(!service.snapshot().settings.paused)contextReasoning.poll();scheduleReasoning();},delay);reasoningTimer.unref?.();}
+    powerMonitor.on('suspend',()=>{reasoningAsleep=true;clearTimeout(reasoningTimer);reasoningTimer=undefined;});
+    powerMonitor.on('resume',()=>{reasoningAsleep=false;scheduleReasoning(5000);});
+    handle('agent-sessions',async options=>{const refresh=flightOptions(options,{refresh:'boolean'}).refresh===true;const view=await sessions().read({maxAgeMs:refresh?0:sessionsShown()?3000:Infinity,includeContext:contextReasoning?.read().settings.enabled===true});
       // This read has just re-read the settings file, so a count turned back on by hand starts counting again here.
       // Nothing else would: once it is off there is no timer left to notice the edit.
       if(!statusTimer&&trayCount()!=='off')scheduleStatus(TRAY_FIRST);
-      return view;});
+      if(sessionsShown()&&!service.snapshot().settings.paused)contextReasoning?.poll();
+      return contextReasoning?.decorateSessions(view)??view;});
     // Hook metadata belongs to a known session even when it has no repository. Core resolves the identity from
     // its last session read; this window-only bridge never reads a transcript or initiates a repository scan.
     handle('agent-session-trace',key=>{if(typeof key!=='string'||!key||key.length>300)throw new Error('Invalid session');return sessions().trace(key);});
@@ -204,11 +306,15 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     // (src/main/usage-claude.mjs, usage-codex.mjs). Read every five minutes, on request, and by the engine choice below.
     try{usage=await createUsage({dataDir,readers:{claude:()=>readClaudeUsage({executable,spawnChild:spawnLongLived}),codex:()=>readCodexUsage({executable,spawnChild:spawnLongLived})},onChange:()=>{push();refreshTrayMenu();}});}catch(error){service.setHealth({errors:[`Usage meter: ${error.message}`]});}
     const meter=()=>{if(!usage)throw new Error('The usage meter is not available right now.');return usage;};
-    // Deterministic: a pinned engine, else the most 5-hour quota left, tie on 7-day, a window at the ceiling is out, else the default.
-    const pickEngine=task=>chooseEngine({task,usage:usage?.status()??null,settings:usage?.settings()??{}});
+    taskRouter=await createTaskRouter({dataDir,getUsage:()=>usage?.status()??null,getSettings:()=>usage?.settings()??{},benchmark,ask:askEngine,selectEngine:chooseEngine});
+    // Task rules and user-rated outcomes run locally; quota remains the fallback until quality evidence is sufficient.
+    const pickEngine=task=>taskRouter.choose(task);
+    handle('route-preview',(engine,text,options)=>taskRouter.preview(engine,text,options));
+    handle('route-feedback',(id,rating)=>taskRouter.feedback(id,rating));
+    handle('route-history-clear',()=>taskRouter.clear());
     handle('usage',async options=>{const {refresh,provider}=flightOptions(options,{refresh:'boolean',provider:'string'});if(provider!==undefined&&!['claude','codex'].includes(provider))throw new Error('Invalid provider');return refresh===true?meter().refresh(provider):meter().status();});
     handle('usage-settings',async patch=>{if(!patch||typeof patch!=='object'||Array.isArray(patch))throw new Error('Invalid preferences');await meter().updateSettings(patch);return usage.status();});
-    // The menu bar count: Summon's only background reader. On a timer it re-reads the same local session metadata the
+    // The menu bar count: on a timer it re-reads the same local session metadata the
     // panel reads, and nothing else: no model, no network, no writes. It keeps a status item only while something
     // needs you or is working, sleeps with the machine, and does not run at all when the setting is off.
     const TRAY_FAST=20000,TRAY_SLOW=60000,TRAY_FIRST=5000,TRAY_ROWS=5,TRAY_TITLE=40;
@@ -258,7 +364,11 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
       if(trayCount()==='off')clearStatus();else if(!statusTimer)scheduleStatus(0);
       return agentSessions.read({maxAgeMs:0});
     });
-    handle('command',async text=>{const result=await commands.execute(text);await restartNative();push();return result;});
+    handle('teaching-read',()=>teaching.read());
+    handle('teaching-action',(action,input)=>teaching.action(action,input));
+    handle('teaching-extension',async()=>{const folder=app.isPackaged?path.join(process.resourcesPath,'browser-teaching'):path.join(root,'integrations/browser-teaching');const error=await shell.openPath(folder);if(error)throw new Error(error);});
+    for(const event of ['suspend','lock-screen'])powerMonitor.on(event,()=>{void teaching.cancel().catch(()=>{});});
+    handle('command',async text=>{noteInput(text);let result=teaching.handles(text)?await teaching.command(text):await commands.execute(text);if(result?.kind==='unknown')result=await teaching.command(text)??result;await restartNative();push();return result;});
     handle('knowledge-search',async(query,options)=>{const result=await searchKnowledge(query,options);push();return result;});
     handle('remember',async value=>{await knowledge.remember({...value,source:'Saved by you in Summon'});push();return snapshot();});
     handle('forget',async id=>{await knowledge.forget(validId(id));push();return snapshot();});
@@ -288,14 +398,16 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
       }
       if(updated.calendarUrl){const url=new URL(updated.calendarUrl);if(url.protocol!=='https:'||url.username||url.password)throw new Error('Use an https calendar URL.');}
       if(updated.accessibilityEnabled===true&&!service.snapshot().settings.accessibilityEnabled)systemPreferences.isTrustedAccessibilityClient(true);
-      await service.updateSettings(updated);await restartNative();push();return snapshot();
+      const wasPaused=service.snapshot().settings.paused;
+      await service.updateSettings(updated);await restartNative();
+      if(wasPaused&&!service.snapshot().settings.paused)scheduleRecovery(0);
+      push();return snapshot();
     });
     handle('add-project',async()=>{const result=await dialog.showOpenDialog(window,{title:'Choose a workspace folder',properties:['openDirectory']});if(!result.canceled&&result.filePaths[0]){const folder=result.filePaths[0];await service.addProject({name:path.basename(folder),path:folder});await refreshKnowledge();}return snapshot();});
     handle('choose-model',async()=>{const result=await dialog.showOpenDialog(window,{title:'Choose a local Whisper model',filters:[{name:'Whisper model',extensions:['bin']}],properties:['openFile']});if(!result.canceled&&result.filePaths[0]){const file=result.filePaths[0];if((await stat(file)).size<1000000)throw new Error('This does not look like a Whisper model.');await voiceControl.stop();await service.updateSettings({whisperModel:file});await service.setHealth({whisper:true});}return snapshot();});
     handle('transcribe',async audio=>{if(voiceBusy)throw new Error('Still transcribing the previous phrase.');voiceBusy=true;try{return await transcriber.transcribe(audio,service.snapshot().settings.whisperModel);}finally{voiceBusy=false;}});
     handle('voice-state',value=>voiceControl.updateVoice(value));
-    // Auto asks the CLI with the most subscription quota left (engine-choice.mjs); a named engine is used as asked.
-    handle('ask',async(engine,text)=>{if(engineBusy)throw new Error('An answer is already running.');engineBusy=true;try{const choice=engine==='auto'?pickEngine({engine:'auto'}):{engine,reason:'pinned'};const knowledgeContext=await searchKnowledge(text.slice(0,500),{projectId:service.snapshot().currentProjectId,limit:5});const answer=await askEngine(choice.engine,text,{...snapshot(),knowledgeContext});return {...answer,engine:choice.engine,reason:choice.reason};}finally{engineBusy=false;}});
+    handle('ask',async(engine,text,options)=>{if(engineBusy)throw new Error('An answer is already running.');if(typeof text!=='string'||!text.trim()||text.length>4000)throw new Error('Enter a question under 4,000 characters.');noteInput(text);engineBusy=true;try{const knowledgeContext=await searchKnowledge(text.slice(0,500),{projectId:service.snapshot().currentProjectId,limit:5});return await taskRouter.answer(engine,text,{...snapshot(),knowledgeContext},options);}finally{engineBusy=false;}});
     const pixels=Buffer.alloc(22*22*4);for(let y=0;y<22;y++)for(let x=0;x<22;x++){const dx=Math.abs(x-10.5),dy=Math.abs(y-10.5);if((dx+dy*0.4<4.5||dy+dx*0.4<4.5)&&dx*dx+dy*dy>5&&dx+dy<11)pixels[(y*22+x)*4+3]=255;}
     const icon=nativeImage.createFromBitmap(pixels,{width:22,height:22});icon.setTemplateImage(true);
     // A non-template green star stays lit in either macOS appearance while the
@@ -315,7 +427,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     // The panel's own 4 s poll picks the change up by itself, so there is no new push channel.
     let hookTimer;
     const onHook=()=>{if(hookTimer||quitting)return;hookTimer=setTimeout(()=>{hookTimer=undefined;if(!quitting&&trayCount()!=='off')scheduleStatus(0);},1000);hookTimer.unref?.();};
-    try{closeRpc=await createRpcServer(service,!app.isPackaged?process.env.SUMMON_SOCKET:undefined,{knowledge,searchKnowledge,onChange:push,workInFlight,agentSessions,onHook,usage,pickEngine});}catch(error){service.setHealth({errors:[`Shared context connection: ${error.message}`]});}
+    const workRecords=visualWorkspace?{readWorkItems:options=>visualWorkspace.readWorkItems(options),updateWorkItem:options=>visualWorkspace.updateWorkItem(options),checkpointWorkItem:options=>visualWorkspace.checkpointWorkItem(options)}:undefined;
+    try{closeRpc=await createRpcServer(service,!app.isPackaged?process.env.SUMMON_SOCKET:undefined,{knowledge,searchKnowledge,onChange:push,workInFlight,agentSessions,workRecords,workRecovery,onHook,usage,pickEngine});}catch(error){service.setHealth({errors:[`Shared context connection: ${error.message}`]});}
     if(!app.isPackaged&&process.env.SUMMON_DEV_URL==='http://127.0.0.1:5179')await window.loadURL(process.env.SUMMON_DEV_URL);else await window.loadFile(path.join(root,'dist/index.html'));
     window.show();
     refreshKnowledge().then(push).catch(error=>console.error('Memory sources:',error.message));
@@ -337,15 +450,22 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     restartNative().catch(error=>service.setHealth({errors:[`Activity monitor: ${error.message}`]}));
     scheduleStatus(TRAY_FIRST);
     usage?.start();
+    scheduleReasoning(5000);
+    scheduleRecovery(5000);
   }).catch(error=>{console.error(error);dialog.showErrorBox('Summon could not start',error.message);app.quit();});
   app.on('before-quit',event=>{
     if(shutdownComplete)return;event.preventDefault();if(quitting)return;
-    quitting=true;nativeGeneration++;native?.kill();globalShortcut.unregisterAll();stopStatus?.();usage?.stop();
+    quitting=true;nativeGeneration++;native?.kill();globalShortcut.unregisterAll();stopStatus?.();usage?.stop();clearTimeout(reasoningTimer);clearTimeout(recoveryTimer);
     const processes=stopProcesses();
-    if(workInFlight)pendingRequests.add(Promise.resolve().then(()=>workInFlight.close()));
+    const recoveryClose=Promise.resolve().then(()=>workRecovery?workRecovery.close():recoverySources?.close?.());
+    pendingRequests.add(recoveryClose);
+    if(workInFlight)pendingRequests.add(recoveryClose.catch(()=>{}).then(()=>workInFlight.close()));
     if(agentSessions)pendingRequests.add(Promise.resolve().then(()=>agentSessions.close()));
     if(visualWorkspace)pendingRequests.add(Promise.resolve().then(()=>visualWorkspace.close()));
+    if(contextReasoning)pendingRequests.add(Promise.resolve().then(()=>contextReasoning.close()));
+    if(teaching)pendingRequests.add(Promise.resolve().then(()=>teaching.close()));
     if(usage)pendingRequests.add(Promise.resolve().then(()=>usage.close()));
+    if(taskRouter)pendingRequests.add(Promise.resolve().then(()=>taskRouter.close()));
     // Request promises include engine/transcription finally blocks, which remove
     // temporary audio and prompt directories after their child process stops.
     fnKey?.stop();

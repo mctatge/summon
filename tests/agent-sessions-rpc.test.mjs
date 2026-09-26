@@ -30,7 +30,7 @@ function fakeView() {
     version: 1, checkedAt: '2026-09-17T15:00:00.000Z',
     totals: { needsYou: 1, newReplies: 2, working: 3, open: 1 },
     groups: [
-      { id: 'needs-you', title: 'Needs you', sessions: [session('claude', 'Fix share links', { group: 'needs-you', activity: 'needs-you', reason: 'Waiting for your OK', project: 'Demo App', placeLabel: 'Claude worktree · calm-otter', branch: 'claude/calm-otter', stateText: 'Waiting for your OK · 4 min' })] },
+      { id: 'needs-you', title: 'Needs you', sessions: [session('claude', 'Fix share links', { group: 'needs-you', activity: 'needs-you', reason: 'Waiting for your OK', repoId: 'repo-demo', project: 'Demo App', placeLabel: 'Claude worktree · calm-otter', branch: 'claude/calm-otter', stateText: 'Waiting for your OK · 4 min' })] },
       { id: 'new', title: 'New replies', sessions: [
         session('codex', 'Dashboard polish', { group: 'new', activity: 'open', project: 'Demo Tool', placeLabel: 'Main folder', stateText: 'New reply · 12 min ago', unread: true }),
         session('cursor', 'Landing copy', { group: 'new', activity: 'quiet', project: 'Demo Site', stateText: 'New reply · 1 h ago', unread: true, live: false }),
@@ -135,7 +135,7 @@ test('the agent_sessions MCP tool is read-only, filters by app and recent, and v
   assert.equal(tools.some(item => /open|resume|control|message|send/.test(item.name)), false);
   assert.ok(tools.some(item => item.name === 'work_in_flight'), 'the existing tools stay listed');
 
-  // Default: everything except the recent-only group, with no folders, keys or open actions.
+  // Default: everything except the recent-only group, with stable coordination identities but no folders or open actions.
   let result = await mcp.call({});
   assert.equal(result.isError, undefined);
   let text = result.content[0].text;
@@ -144,9 +144,9 @@ test('the agent_sessions MCP tool is read-only, filters by app and recent, and v
   assert.deepEqual(answer.groups.map(group => group.id), ['needs-you', 'new', 'working', 'open', 'interrupted']);
   assert.deepEqual(answer.totals, view.totals);
   assert.equal(answer.checkedAt, view.checkedAt);
-  for (const key of ['"key"', '"folder"', '"openHint"', '"openable"', '"byPlace"', '"pathAliases"', '"placeId"', '"repoId"', 'synthetic-old']) assert.equal(text.includes(key), false, key);
+  for (const key of ['"folder"', '"openHint"', '"openable"', '"byPlace"', '"pathAliases"', '"placeId"', 'synthetic-old']) assert.equal(text.includes(key), false, key);
   const first = answer.groups[0].sessions[0];
-  assert.deepEqual(first, { app: 'claude', appLabel: 'Claude app', title: 'Fix share links', project: 'Demo App', placeLabel: 'Claude worktree · calm-otter', branch: 'claude/calm-otter', activity: 'needs-you', stateText: 'Waiting for your OK · 4 min', reason: 'Waiting for your OK', sinceAt: '2026-09-17T14:58:00.000Z', updatedAt: '2026-09-17T14:59:00.000Z', unread: false, live: true });
+  assert.deepEqual(first, { key: view.groups[0].sessions[0].key, repoId: view.groups[0].sessions[0].repoId, app: 'claude', appLabel: 'Claude app', title: 'Fix share links', project: 'Demo App', placeLabel: 'Claude worktree · calm-otter', branch: 'claude/calm-otter', activity: 'needs-you', stateText: 'Waiting for your OK · 4 min', reason: 'Waiting for your OK', sinceAt: '2026-09-17T14:58:00.000Z', updatedAt: '2026-09-17T14:59:00.000Z', unread: false, live: true });
   const working = answer.groups.find(group => group.id === 'working').sessions;
   assert.equal(working[0].helpers, 2);
   assert.equal(working[1].confidence, 'inferred');
@@ -255,9 +255,12 @@ async function startMain({ createAgentSessions, createWorkInFlight, createVisual
   const sourceURL = new URL('../src/main/main.mjs', import.meta.url);
   const source = (await readFile(sourceURL, 'utf8')).replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify(sourceURL.href));
   vm.runInNewContext(source, {
-    app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop },
+    app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop }, nativeTheme: { shouldUseDarkColors: false, on: noop, removeListener: noop },
     createWorkInFlight, runGrouping: async () => ({ raw: {}, model: null }), GIT_ENV: {},
     createAgentSessions, createVisualWorkspace, clipboard: { writeText: text => { copied.push(text); } },
+    createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
+    createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
+    createContextReasoning:async()=>({read:()=>({settings:{enabled:false,engine:'auto'}}),request:()=>({settings:{enabled:false,engine:'auto'}}),decorateSessions:view=>view,close:async()=>{}}),runContextReasoning:()=>assert.fail('No reasoning model runs in this fixture.'),
     createDesktopVoice: () => ({ publish: noop, updateVoice: noop, snapshot: () => ({state:'off',mode:'off',micActive:false}), toggle: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -272,8 +275,12 @@ async function startMain({ createAgentSessions, createWorkInFlight, createVisual
     askEngine: () => assert.fail('No prompt is sent.'), createRpcServer: async (_service, _socket, options) => { ctx.rpcOptions = options; return async () => {}; },
     run: missing, scrubbedEnv: () => ({}), executable: missing, stopProcesses: async () => {},
     // The usage meter and engine choice: stubbed so no timer or CLI of theirs runs in this lifecycle.
+    createTaskRouter:async ({ask,selectEngine,getUsage,getSettings})=>({choose:task=>selectEngine({task,usage:getUsage(),settings:getSettings()}),answer:(engine,text,snapshot,options)=>ask(engine,text,snapshot,options),close:async()=>{}}),
     createUsage:async()=>({status:()=>({version:1,settings:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},refreshing:[],problem:null}),settings:()=>({usageCeiling:85,defaultEngine:'claude'}),refresh:async()=>({}),updateSettings:async()=>({}),start:noop,pause:noop,resume:noop,stop:noop,close:async()=>{}}),usageText:()=>'',readClaudeUsage:missing,readCodexUsage:missing,chooseEngine:()=>({engine:'claude',reason:'stub'}),spawnLongLived:missing,
-    loadSealedSegments: () => [],
+    loadSealedSegments: () => [], sealedPath: () => false,
+    createWorkRecoverySources: async () => ({ close: async () => {} }),
+    createWorkRecovery: async () => ({ read: async () => ({}), setEnabled: async () => ({}), scan: async () => null, review: async () => ({}), userMessages: async () => [], close: async () => {} }),
+    createCompletionReconciler: () => ({ run: async () => ({ reported: [], skipped: [], errors: [] }) }),
     createLauncher: value => { ctx.launcherOptions = value; return launcher; },
     process: { env: {}, resourcesPath: '/private/tmp/synthetic-resources', umask: noop }, Buffer, console, setTimeout, clearTimeout, URL,
   }, { filename: fileURLToPath(sourceURL) });
@@ -342,7 +349,7 @@ test('main reads traces for known sessions without repositories only from the tr
   await assert.rejects(ctx.call('agent-session-trace', item.key), /shutting down/);
 });
 
-test('main confines visual reads and goal saves to trusted IPC and drains them before quitting', async () => {
+test('main confines visual reads and user confirmation to trusted IPC, exposing only the work-record facade to RPC', async () => {
   const calls = [], sourceCalls = [];
   let options, releaseSave, releaseClose, closes = 0;
   const saveGate = new Promise(resolve => { releaseSave = resolve; });
@@ -372,7 +379,7 @@ test('main confines visual reads and goal saves to trusted IPC and drains them b
   assert.equal(await options.getWorkInFlight(), work);
   assert.deepEqual(plain(sourceCalls.pop()), ['flight', { maxAgeMs: 20000 }]);
   assert.equal(await options.getAgentSessions(), agents);
-  assert.deepEqual(plain(sourceCalls.pop()), ['sessions', { maxAgeMs: 3000 }]);
+  assert.deepEqual(plain(sourceCalls.pop()), ['sessions', { maxAgeMs: 3000, includeContext: false }]);
   ctx.window.visible = false;
   await options.getAgentSessions();
   assert.equal(sourceCalls.pop()[1].maxAgeMs, Infinity, 'hidden-window visual reads reuse the session cache');
@@ -393,7 +400,8 @@ test('main confines visual reads and goal saves to trusted IPC and drains them b
     await assert.rejects(handler({ sender: ctx.window.webContents, senderFrame: {} }, input), /Untrusted/);
   }
   assert.deepEqual(calls, [], 'invalid or untrusted IPC never reaches the visual service');
-  assert.equal(Object.values(ctx.rpcOptions).includes(visual), false, 'the socket receives no visual service or goal writer');
+  assert.equal(Object.values(ctx.rpcOptions).includes(visual), false, 'the socket receives no unrestricted visual service or user goal writer');
+  assert.deepEqual(Object.keys(ctx.rpcOptions.workRecords).sort(), ['checkpointWorkItem', 'readWorkItems', 'updateWorkItem']);
   assert.equal(Object.keys(ctx.rpcOptions).some(key => /visual|goal/i.test(key)), false);
 
   const pending = ctx.call('visual-goal-save', { repoId: 'demo', title: 'Wait for save' });
@@ -470,17 +478,17 @@ test('main wires Agent sessions into IPC, the socket service and shutdown, and o
   assert.deepEqual(ctx.health.filter(value => value.errors), [], 'no startup problems');
 
   assert.equal(await ctx.call('agent-sessions'), view);
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000 }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000, includeContext: false }]);
   await ctx.call('agent-sessions', { refresh: true });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0 }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0, includeContext: false }]);
   await ctx.call('agent-sessions', { refresh: false });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000 }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000, includeContext: false }]);
   // A hidden window keeps polling (background throttling is off), so it gets the last check instead of a new one.
   ctx.window.visible = false;
   await ctx.call('agent-sessions');
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: null }], 'Infinity (JSON null): answered from the last check');
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: null, includeContext: false }], 'Infinity (JSON null): answered from the last check');
   await ctx.call('agent-sessions', { refresh: true });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0 }], 'Check again still checks');
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0, includeContext: false }], 'Check again still checks');
   ctx.window.visible = true;
   for (const bad of [{ refresh: 'yes' }, { forAgent: false }, [], 'refresh']) await assert.rejects(ctx.call('agent-sessions', bad), /Invalid request/);
 
@@ -871,7 +879,7 @@ test('the CLI board and the MCP tool read what the real aggregator returns (fake
   assert.deepEqual(answer.groups.map(group => group.id), ['needs-you', 'working', 'open']);
   assert.equal(answer.groups[0].sessions[0].project, 'Demo App');
   assert.deepEqual(answer.totals, view.totals);
-  for (const key of ['"key"', '"folder"', '"openHint"', home]) assert.equal(JSON.stringify(answer).includes(key), false, key);
+  for (const key of ['"folder"', '"openHint"', home]) assert.equal(JSON.stringify(answer).includes(key), false, key);
   const active = JSON.parse((await mcp.call({ app: 'claude' })).content[0].text);
   assert.deepEqual(active.groups.map(group => group.id), ['needs-you'], 'recent sessions are left out while others are active');
   assert.deepEqual(active.totals, { needsYou: 1, newReplies: 0, working: 0, open: 0 }, 'Summon counts one app before its cap');

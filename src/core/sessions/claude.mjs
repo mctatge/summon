@@ -3,12 +3,14 @@
  * the app's localStorage unread marks, git-worktrees.json, and the last 64 KB of terminal transcripts.
  * Which files a session edited comes from the transcript's own file-history metadata lines, paths only, and from the
  * names of the entries in that session's ~/.claude/file-history folder, which are hashes of the paths.
- * Never reads peer-token .key files, config.json, last-prompt lines, message text or the file-history backup files
+ * Recent evidence keeps user/assistant text only, dropping tool output and thinking blocks.
+ * Never reads peer-token .key files, config.json, last-prompt lines or the file-history backup files
  * under ~/.claude/file-history/; never writes, locks or connects to anything. */
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { sealedPath } from '../workstreams.mjs';
+import { recentContext, CONTEXT_LINE_BYTES } from './recent-context.mjs';
 
 const DAY = 864e5;
 const ORIGIN = 'https://claude.ai';
@@ -475,6 +477,7 @@ function parseTail(text, truncated) {
   if (truncated) lines.shift();
   const info = { entrypoint: null, cwd: null, branch: null, model: null, customTitle: null, aiTitle: null, updatedAt: null, turn: 'unknown', lastEventAt: null };
   let last = null;
+  let messages = [];
   for (const line of lines) {
     if (line.charCodeAt(0) !== 123) continue;
     const leading = LEADING_TYPE.exec(line.slice(0, 80));
@@ -498,6 +501,10 @@ function parseTail(text, truncated) {
     info.branch = shortText(row.gitBranch, 200) ?? info.branch;
     if (at) info.updatedAt = Math.max(info.updatedAt ?? 0, at);
     if (row.isSidechain === true || row.isMeta === true) continue;
+    if (line.length <= CONTEXT_LINE_BYTES && !row.isCompactSummary && !row.isApiErrorMessage) {
+      const context = recentContext([{ role: type, content: row.message?.content, at }]);
+      if (context) messages = recentContext([...messages, ...context.messages]).messages;
+    }
     if (type === 'assistant') {
       const model = row.message?.model;
       if (typeof model === 'string' && !model.startsWith('<')) info.model = shortText(model, 80);
@@ -510,6 +517,7 @@ function parseTail(text, truncated) {
       last = { kind: 'working', at };
     }
   }
+  info.recentContext = recentContext(messages);
   info.turn = { end: 'finished', error: 'failed', tool: 'tool', working: 'working' }[last?.kind] ?? 'unknown';
   info.lastEventAt = last?.at ?? null;
   info.title = info.customTitle ?? info.aiTitle ?? null;
@@ -832,6 +840,7 @@ function hookOverride(hook, own, inferred, ctx) {
 function session(fields) {
   return {
     app: 'claude', surface: fields.surface, id: fields.id, title: fields.title ?? null,
+    ...(fields.recentContext ? { recentContext: fields.recentContext } : {}),
     ...(fields.hookSessionId ? { hookSessionId: fields.hookSessionId } : {}),
     // 'summon' only when Summon started this session itself (the hook ledger holds its launch tag).
     origin: fields.origin === 'summon' ? 'summon' : null,
@@ -992,9 +1001,12 @@ async function scan(cache, options, stats) {
     if (item.released || cliToLocal.has(item.id) || desktopLive.has(item.id)) continue;
     if (item.mtimeMs >= nowMs - windowMs) terminalCandidates.push(item);
   }
-  // Desktop records without a status need their tail too.
+  // Desktop sessions need their recent conversation too, even when their registry already reports a state.
   const fallbackIds = new Set();
-  for (const { reg } of interesting) if (reg && !reg.status && index.has(reg.sessionId)) fallbackIds.add(reg.sessionId);
+  for (const { reg, entry } of interesting) {
+    const cli = reg?.sessionId ?? cliOf(entry);
+    if (cli && index.has(cli)) fallbackIds.add(cli);
+  }
   const tailEntries = [...terminalCandidates, ...[...fallbackIds].map(id => index.get(id))]
     .sort((a, b) => Number(needIds.has(b.id)) - Number(needIds.has(a.id)) || b.mtimeMs - a.mtimeMs);
   const tails = await tailsFor(cache, tailEntries, ctx);
@@ -1036,6 +1048,7 @@ async function scan(cache, options, stats) {
     } else if (reported) {
       state = { activity: reported.activity, reason: reported.reason };
       since = reported.since;
+      if (state.activity === 'working') helpers = await countHelpers(cache, index.get(cli), cli, ctx, budget);
     } else if (reg && !state) {
       const indexed = index.get(cli);
       helpers = await countHelpers(cache, indexed, cli, ctx, budget);
@@ -1057,7 +1070,7 @@ async function scan(cache, options, stats) {
     if (!(live || isUnread || state.activity === 'needs-you' || (lastActivityAt ?? 0) >= horizon)) continue;
     const lease = byLease.get(entry.id);
     const item = session({
-      surface: 'desktop', id: entry.id, hookSessionId: cli, title: full?.title,
+      surface: 'desktop', id: entry.id, hookSessionId: cli, title: full?.title, recentContext: tails.get(cli)?.recentContext,
       cwd: full?.cwd ?? entry.prefix.cwd ?? reg?.cwd, worktreePath: full?.worktreePath ?? lease?.path, branch: full?.branch ?? lease?.branch,
       startedAt: full?.createdAt, updatedAt: lastActivityAt,
       activity: state.activity, activitySince: since, reason: state.reason,
@@ -1098,7 +1111,7 @@ async function scan(cache, options, stats) {
       helpers = await countHelpers(cache, indexed, id, ctx, budget);
     }
     const item = session({
-      surface: reg.kind === 'bg' ? 'background' : 'terminal', id, title: tail?.title ?? reg.name, origin: hook?.launch ? 'summon' : null,
+      surface: reg.kind === 'bg' ? 'background' : 'terminal', id, title: tail?.title ?? reg.name, recentContext: tail?.recentContext, origin: hook?.launch ? 'summon' : null,
       // A registry name is only kept when the person set it, so it is a user title either way.
       titleSource: tail?.title ? tail.titleSource : reg.name ? 'user' : null,
       cwd: reg.cwd ?? tail?.cwd, branch: tail?.branch, startedAt: reg.startedAt ?? (indexed ? time(indexed.birthtimeMs) : null),
@@ -1118,7 +1131,7 @@ async function scan(cache, options, stats) {
     if (!tail || tail.entrypoint !== 'cli' || !UUID.test(item.id)) continue;
     if (!tail.updatedAt || tail.updatedAt < nowMs - windowMs) continue;
     const row = session({
-      surface: 'terminal', id: item.id, title: tail.title, titleSource: tail.titleSource, cwd: tail.cwd, branch: tail.branch, origin: hookFor(item.id)?.launch ? 'summon' : null,
+      surface: 'terminal', id: item.id, title: tail.title, recentContext: tail.recentContext, titleSource: tail.titleSource, cwd: tail.cwd, branch: tail.branch, origin: hookFor(item.id)?.launch ? 'summon' : null,
       startedAt: time(item.birthtimeMs), updatedAt: tail.updatedAt,
       activity: 'quiet', activitySince: tail.updatedAt, live: false, confidence: 'reported', model: tail.model,
       touchedPaths: edits.get(item.id),
@@ -1128,6 +1141,24 @@ async function scan(cache, options, stats) {
     sessions.push(row);
   }
 
+  // A retained provider child is its own lifecycle, not a task outcome and not the parent's activity.
+  // Transcript mtimes still supply only an inferred count; they never create invented child identities.
+  for (const item of sessions) {
+    const parentSessionKey = `claude:${item.surface}:${item.id}`;
+    const hookId = item.hookSessionId ?? item.id;
+    const hook = hookFor(hookId);
+    const children = (hook?.children ?? []).filter(child => !sealedPath(child.cwd)).slice(-100).map(child => {
+      const ended = Number.isFinite(child.endedAt);
+      const stale = !ended && (!item.live || nowMs - child.updatedAt > limits.staleWorkingMs || hook.state === 'ended');
+      return { key: `claude:child:${hookId}:${child.id}`, id: child.id, parentSessionKey, provider: 'claude',
+        cwd: child.cwd ?? null, worktreePath: null,
+        label: child.type || `Helper ${child.id}`, activity: ended ? 'quiet' : stale ? 'unknown' : child.state ?? 'unknown',
+        confidence: stale || !child.state ? 'inferred' : 'reported',
+        startedAt: child.startedAt ? new Date(child.startedAt).toISOString() : null,
+        updatedAt: new Date(child.updatedAt).toISOString(), endedAt: ended ? new Date(child.endedAt).toISOString() : null };
+    });
+    if (children.length) item.children = children;
+  }
   for (const [id, state] of cache.helpers) if (state.seenAt !== nowMs) cache.helpers.delete(id);
   sessions.sort((a, b) => rank(a) - rank(b) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0) || a.id.localeCompare(b.id));
   const capped = sessions.slice(0, limits.sessions);

@@ -1,0 +1,13 @@
+import type { AgentSession, VisualGoal, WorkTreeSnapshot } from './types';
+export type TreeNode = { id: string; kind: 'root' | 'goal' | 'external'; repoId: string; label: string; projectName?: string; detail?: string; goal?: VisualGoal; width: number; height: number; rank: number; x: number; y: number; parentNodeId: string | null; depth: number; childCount: number; descendantCount: number; expanded: boolean; activeCount: number; doneCount: number; totalCount: number; dependencyCount: number };
+export type Point = { x: number; y: number };
+export type Curve = { start: Point; c1: Point; c2: Point; end: Point; path: string };
+export type TreeEdge = Curve & { id: string; from: string; to: string; kind: 'root' | 'dependency' | 'hierarchy' | 'external' | 'coordination'; label: string; cycle: boolean };
+export type TreeAgent = Point & { id: string; nodeId: string; edgeId: string; session: AgentSession; children: NonNullable<AgentSession['children']>; linkedChildId: string | null; active: boolean; position: number; path: string };
+export type WorkTreeLayout = { nodes: TreeNode[]; edges: TreeEdge[]; agents: TreeAgent[]; unlinkedSessions: AgentSession[]; width: number; height: number; totalGoalCount: number; collapsedCount: number; hiddenCount: number; cycleCount: number; warnings: string[] };
+export function goalNodeId(repoId: string, goalId: string): string;
+export function rootNodeId(repoId: string): string;
+export function connector(from: TreeNode, to: TreeNode, side?: boolean): Curve;
+export function pointOnConnector(curve: Curve, t: number): Point;
+export function connectorUntil(curve: Curve, t: number): string;
+export function buildWorkTreeLayout(data: WorkTreeSnapshot, options?: { selectedRepoId?: string | null; maxGoals?: number; expandedNodes?: Set<string>; selectedNodeId?: string | null }): WorkTreeLayout;

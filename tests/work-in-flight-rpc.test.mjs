@@ -345,9 +345,13 @@ async function startMain({ createWorkInFlight }) {
   const sourceURL = new URL('../src/main/main.mjs', import.meta.url);
   const source = (await readFile(sourceURL, 'utf8')).replace(/^import .*;\n/gm, '').replaceAll('import.meta.url', JSON.stringify(sourceURL.href));
   vm.runInNewContext(source, {
-    app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop },
+    app, BrowserWindow: Window, Tray, Menu: { buildFromTemplate: x => x, setApplicationMenu: noop }, screen: {}, powerMonitor: { on: noop }, nativeTheme: { shouldUseDarkColors: false, on: noop, removeListener: noop },
     createWorkInFlight, runGrouping: async (...args) => { ctx.groupingCall = args; return { raw: {}, model: null }; }, GIT_ENV: { GIT_OPTIONAL_LOCKS: '0' },
     createAgentSessions: async () => ({ read: async () => { ctx.sessionReads++; return {}; }, placeCounts: () => { ctx.placeCountCalls++; return ctx.placeCounts; }, openTarget: () => assert.fail('No session is opened by Work in flight.'), settings: () => ({}), updateSettings: async () => ({}), close: async () => {} }), clipboard: { writeText: () => assert.fail('Nothing is copied by Work in flight.') },
+    createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
+    createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
+    createContextReasoning:async()=>({read:()=>({settings:{enabled:false,engine:'auto'}}),request:()=>({settings:{enabled:false,engine:'auto'}}),decorateSessions:view=>view,close:async()=>{}}),runContextReasoning:()=>assert.fail('No reasoning model runs in this fixture.'),
+    createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopVoice: () => ({ publish: noop, updateVoice: noop, snapshot: () => ({state:'off',mode:'off',micActive:false}), toggle: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -361,6 +365,7 @@ async function startMain({ createWorkInFlight }) {
     askEngine: () => assert.fail('No prompt is sent.'), createRpcServer: async (_service, _socket, options) => { ctx.rpcOptions = options; return async () => {}; },
     run: missing, scrubbedEnv: ctx.scrubbedEnv, executable: missing, stopProcesses: async () => {},
     // The usage meter and engine choice: stubbed so no timer or CLI of theirs runs in this lifecycle.
+    createTaskRouter:async ({ask,selectEngine,getUsage,getSettings})=>({choose:task=>selectEngine({task,usage:getUsage(),settings:getSettings()}),answer:(engine,text,snapshot,options)=>ask(engine,text,snapshot,options),close:async()=>{}}),
     createUsage:async()=>({status:()=>({version:1,settings:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},refreshing:[],problem:null}),settings:()=>({usageCeiling:85,defaultEngine:'claude'}),refresh:async()=>({}),updateSettings:async()=>({}),start:noop,pause:noop,resume:noop,stop:noop,close:async()=>{}}),usageText:()=>'',readClaudeUsage:missing,readCodexUsage:missing,chooseEngine:()=>({engine:'claude',reason:'stub'}),spawnLongLived:missing,
     loadSealedSegments: () => [],
     createLauncher: () => ({ launch: () => assert.fail('Work in flight never launches an agent.'), installClaudeHooks: () => assert.fail('Nothing installs hooks here.'), hookStatus: async () => ({ claude: { installed: false, current: false } }) }),

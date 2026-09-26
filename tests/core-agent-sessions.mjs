@@ -67,6 +67,45 @@ async function fixture(t, { lists, wrap, places = [], projects = [], privatePath
 }
 const byKey = view => Object.fromEntries(view.groups.flatMap(group => group.sessions.map(item => [item.key, item])));
 
+test('public child metadata keeps only rooted provider edges and hides private child content', async t => {
+  const parentKey = 'claude:desktop:local_children';
+  const child = (id, parentSessionKey = parentKey) => ({ key: `claude:child:${id}`, id, provider: 'claude', parentSessionKey,
+    label: 'Helper bob@example.com', activity: 'working', confidence: 'reported', startedAt: new Date(NOW - MIN).toISOString(),
+    updatedAt: new Date(NOW).toISOString(), endedAt: null, prompt: 'SECRET', transcriptPath: '/private/SECRET' });
+  const a = child('a'), b = child('b', a.key), orphan = child('orphan', 'claude:child:absent');
+  const cycleA = child('cycle-a', 'claude:child:cycle-b'), cycleB = child('cycle-b', 'claude:child:cycle-a');
+  const lists = { claude: [raw('claude', 'local_children', { activity: 'working', live: true, helpers: 3, children: [a, b, orphan, cycleA, cycleB] })] };
+  const { svc } = await fixture(t, { lists });
+  const row = byKey(await svc.read({ forAgent: true }))[parentKey];
+  assert.deepEqual(row.children.map(value => value.id), ['a', 'b']);
+  assert.equal(row.children[1].parentSessionKey, a.key);
+  assert.equal(row.helpersInferred, true);
+  assert.ok(!JSON.stringify(row.children).includes('SECRET'));
+  assert.ok(!JSON.stringify(row.children).includes('bob@example.com'));
+  assert.equal(row.children[0].endedAt, null);
+});
+
+test('delegated children use their own repository privacy without changing the parent workspace', async t => {
+  const dirs = ['Projects/A/src', 'Projects/B/src', 'Projects/B/clients/acme'];
+  const places = root => ['A', 'B'].map(name => ({ id: `place-${name}`, repoId: `repo-${name}`, repoName: name,
+    path: path.join(root, 'Projects', name), kind: 'main', label: 'Main folder', missing: false }));
+  const f = await fixture(t, { dirs, places, privatePaths: root => ({ [path.join(root, 'Projects/B')]: ['clients/'] }) });
+  const parentKey = 'codex:desktop:root';
+  const child = (id, folder, parentSessionKey = parentKey) => ({ key: `codex:desktop:${id}`, id, provider: 'codex', parentSessionKey,
+    label: 'Review clients/acme and bob@example.com', cwd: path.join(f.root, folder), activity: 'working', confidence: 'reported', updatedAt: new Date(NOW).toISOString() });
+  f.fakes.lists.codex = [raw('codex', 'root', { cwd: path.join(f.root, 'Projects/A/src'), activity: 'working', live: true,
+    children: [child('b-public', 'Projects/B/src'), child('b-private', 'Projects/B/clients/acme'), child('nested-hidden', 'Projects/B/src', 'codex:desktop:b-private')] })];
+  const row = byKey(await f.svc.read({ forAgent: true }))[parentKey];
+  assert.equal(row.repoId, 'repo-A');
+  assert.deepEqual(row.children.map(value => value.id), ['b-public']);
+  assert.ok(!JSON.stringify(row.children).includes('clients/acme'));
+  assert.ok(!JSON.stringify(row.children).includes('bob@example.com'));
+  assert.ok(!JSON.stringify(row.children).includes(f.root));
+  assert.ok(!Object.hasOwn(row.children[0], 'cwd'));
+  assert.ok(!Object.hasOwn(row.children[0], 'worktreePath'));
+  assert.ok(!Object.hasOwn(row.children[0], 'repoId'), 'delegation does not attach B work to A');
+});
+
 test('trace resolves known session identities, including Claude desktop CLI joins, without exposing ids or payloads', async t => {
   const cli = uuid(701), terminal = uuid(702), codex = uuid(703);
   const desktopKey = 'claude:desktop:local_trace-desktop';
@@ -306,7 +345,8 @@ test('agent reads mask the words about the work and say nothing at all from a pr
   const g = await fixture(t, { places, dirs, privatePaths: root => ({ [path.join(root, 'Projects/Harbor')]: ['clients/'] }) });
   const repo = path.join(g.root, 'Projects/Harbor');
   g.fakes.lists.claude = [
-    raw('claude', 'local_client', { activity: 'needs-you', title: 'Draft for Acme', cwd: path.join(repo, 'clients/acme'), work: { added: 9, removed: 1, files: 2 } }),
+    raw('claude', 'local_client', { activity: 'needs-you', title: 'Draft for Acme', cwd: path.join(repo, 'clients/acme'), work: { added: 9, removed: 1, files: 2 },
+      children: [{ key: 'claude:child:private-child', id: 'private-child', provider: 'claude', parentSessionKey: 'claude:desktop:local_client', label: 'Private child', activity: 'working', updatedAt: new Date(NOW).toISOString() }] }),
     raw('claude', 'local_src', { activity: 'needs-you', title: 'Share links', cwd: path.join(repo, 'src') }),
   ];
   const mine = byKey(await g.svc.read());
@@ -315,6 +355,7 @@ test('agent reads mask the words about the work and say nothing at all from a pr
 
   const agent = byKey(await g.svc.read({ forAgent: true }));
   assert.equal(agent['claude:desktop:local_client'].work, null, 'a session in a private folder says nothing about its work');
+  assert.equal(agent['claude:desktop:local_client'].children, undefined, 'private parent children are not shared');
   assert.equal(agent['claude:desktop:local_client'].workText, '');
   const src = agent['claude:desktop:local_src'];
   assert.match(src.work.workstream, /\[redacted\]/);
@@ -1289,4 +1330,34 @@ test('readers get each app\'s hook states, a hook or a launch makes the next rea
   assert.equal(saved.sessions[`claude:${uuid(6)}`].state, 'open');
   assert.equal(saved.launches[tag].app, 'codex');
   assert.ok(!JSON.stringify(saved).includes('Session '), 'no title ever lands in the hook file');
+});
+
+test('recent conversation evidence is bounded, private-folder hidden and masked on every public read', async t => {
+  const dirs = ['Projects/Harbor/clients/acme', 'Projects/Harbor/src'];
+  const places = root => [{ id: 'place-main', repoId: 'harbor', repoName: 'Harbor', path: path.join(root, 'Projects/Harbor'), kind: 'main', label: 'Main folder', missing: false }];
+  const f = await fixture(t, { places, dirs, privatePaths: root => ({ [path.join(root, 'Projects/Harbor')]: ['clients/'] }) });
+  const repo = path.join(f.root, 'Projects/Harbor');
+  const evidence = { messages: [
+    { role: 'developer', text: 'SECRET instructions', at: NOW },
+    ...Array.from({ length: 10 }, (_, i) => ({ role: 'user', text: `Step ${i}: email bob@example.com about clients/acme/data.csv with sk-abcdefghijklmnopqrstuvwxyz123456 ${'x'.repeat(1300)}`, at: NOW - 10000 + i })),
+  ], arbitrary: 'SECRET unknown field' };
+  f.fakes.lists.claude = [
+    raw('claude', 'local_public', { activity: 'working', live: true, cwd: path.join(repo, 'src'), recentContext: evidence }),
+    raw('claude', 'local_private', { activity: 'working', live: true, cwd: path.join(repo, 'clients/acme'), recentContext: evidence }),
+  ];
+  for (const forAgent of [false, true]) {
+    const ordinary = byKey(await f.svc.read({ forAgent }));
+    assert.ok(!Object.hasOwn(ordinary['claude:desktop:local_public'], 'recentContext'), 'ordinary local and agent reads expose no conversation excerpts');
+    const rows = byKey(await f.svc.read({ forAgent, includeContext: true }));
+    assert.equal(rows['claude:desktop:local_private'].recentContext, null);
+    const context = rows['claude:desktop:local_public'].recentContext;
+    assert.equal(context.messages.length, 6);
+    assert.ok(context.messages.every(item => item.text.length <= 1000));
+    assert.equal(context.updatedAt, NOW - 9991);
+    const text = JSON.stringify(context);
+    assert.doesNotMatch(text, /SECRET|bob@example|clients\/acme|sk-abc|Step 0/);
+    assert.match(text, /\[private path\]/);
+    assert.match(text, /Step 9/);
+  }
+  assert.doesNotMatch(await fs.readFile(f.file, 'utf8').catch(() => ''), /Step 9|bob@example/, 'conversation excerpts are not persisted in session settings');
 });

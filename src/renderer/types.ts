@@ -3,12 +3,15 @@ export type Activity = { app: string; bundleId: string; title?: string; document
 export type FileRecord = { id: string; name: string; path: string; originalPath?: string; extension: string; size: number; firstSeenAt: string; createdAt?: string; modifiedAt?: string; lastSeenAt: string; projectId: string | null; projectSource: 'selected' | 'inferred' | 'corrected' | null; status: 'present' | 'missing' | 'filed' | 'waiting' | 'unconfirmed'; reason?: string; accessIssue?: string; sourceUrl?: string; filingAt?: string };
 export type EventRecord = { id: string; at: string; type: string; title: string; detail?: string; fileId?: string; projectId?: string | null };
 export type Settings = { paused: boolean; accessibilityEnabled: boolean; activityEnabled: boolean; retentionDays: number; calendarUrl: string; whisperModel: string; handsFree: boolean; excludedApps: string[]; accentColor?: string; benchmarkKeyConfigured?: boolean };
-export type Snapshot = { version: 1; usage?: UsageView; projects: Project[]; currentProjectId: string | null; activity: Activity | null; files: FileRecord[]; events: EventRecord[]; settings: Settings; health: { watching: boolean; accessibility: boolean; native: boolean; whisper: boolean; errors: string[]; lastScanAt: string | null }; knowledge?: KnowledgeSnapshot; localModel?: LocalModelHealth; wake?: WakeHealth; speaker?: SpeakerHealth; fnKey?: { status: 'off' | 'starting' | 'ready' | 'permission-required' | 'error' }; benchmark?: { fetchedAt: string; source: string; models: { name: string; score: number | null }[]; error?: string }; dataDir: string };
-export type CommandResult = { kind: 'files' | 'context' | 'message' | 'benchmark' | 'unknown'; message: string; routineReceiptId?: string; completedCommand?: string; routineName?: string; failed?: boolean; warning?: string; fileIds?: string[]; projectId?: string | null };
+export type Snapshot = { version: 1; teaching?: {phase: string; message: string; activeId: string | null; browser: {connected: boolean}}; usage?: UsageView; projects: Project[]; currentProjectId: string | null; activity: Activity | null; files: FileRecord[]; events: EventRecord[]; settings: Settings; health: { watching: boolean; accessibility: boolean; native: boolean; whisper: boolean; errors: string[]; lastScanAt: string | null }; knowledge?: KnowledgeSnapshot; localModel?: LocalModelHealth; wake?: WakeHealth; speaker?: SpeakerHealth; fnKey?: { status: 'off' | 'starting' | 'ready' | 'permission-required' | 'error' }; benchmark?: { fetchedAt: string; source: string; category?: string; metric?: string; stale?: boolean; sourceKind?: string; notice?: string; models: { name: string; score: number | null }[]; error?: string }; dataDir: string };
+export type CommandResult = { kind: 'files' | 'context' | 'message' | 'benchmark' | 'unknown'; message: string; benchmarkSource?: boolean; routineReceiptId?: string; completedCommand?: string; routineName?: string; failed?: boolean; warning?: string; fileIds?: string[]; projectId?: string | null };
 export type VoiceMode = 'off' | 'command' | 'handsfree';
 export type VoiceStatus = { state: string; mode: VoiceMode; micActive: boolean; text?: string; enrollment?: { count: number; total: number; phase: 'listening' | 'hearing' | 'captured' | 'done' } };
 export type SettingsPatch = Partial<Settings> & { benchmarkApiKey?: string };
 export type SummonBridge = {
+  teachingRead(): Promise<import('./teaching-types').TeachingView>;
+  teachingAction(action: string, input?: unknown): Promise<import('./teaching-types').TeachingView>;
+  showTeachingExtension(): Promise<void>;
   detectWake(audio: ArrayBuffer): Promise<{detected:boolean;keyword?:string;elapsedMs:number}>;
   verifySpeaker(audio: ArrayBuffer): Promise<{verified:boolean;score:number;elapsedMs:number;reason?:string;error?:string}>;
   beginEnrollment(): Promise<{minSamples:number}>;
@@ -34,8 +37,10 @@ export type SummonBridge = {
   chooseModel(): Promise<Snapshot>;
   openLink(name: 'calendar' | 'benchmark' | 'accessibility' | 'microphone' | 'input-monitoring' | 'data-folder' | 'claude-login' | 'codex-login' | 'file-access'): Promise<void>;
   transcribe(audio: ArrayBuffer): Promise<{ text: string }>;
-  // 'auto' lets main pick the CLI with the most subscription quota left (engine-choice.mjs); engine and reason say which and why.
-  ask(engine: 'claude' | 'codex' | 'auto', text: string): Promise<{ text: string; engine?: UsageProvider; reason?: string }>;
+  ask(engine: 'claude' | 'codex' | 'auto', text: string, options?: RoutingOptions): Promise<RoutedAnswer>;
+  routePreview(engine: 'claude' | 'codex' | 'auto', text: string, options?: RoutingOptions): Promise<RoutePreview>;
+  routeFeedback(id: string, rating: 'useful' | 'not-useful'): Promise<RoutingHistory>;
+  clearRoutingHistory(): Promise<RoutingHistory>;
   // The usage meter: the last reading, or a fresh one with refresh (two bounded CLI reads, about a second, no quota spent).
   usage(options?: { refresh?: boolean; provider?: UsageProvider }): Promise<UsageView>;
   usageSettings(patch: Partial<UsageSettings>): Promise<UsageView>;
@@ -61,22 +66,34 @@ export type SummonBridge = {
   // Starts claude or codex in Terminal for a workspace (a click in the workbench only). hooks is false when node was
   // not found, so the session cannot report its state; mcp says whether Summon's MCP server came from the user's own
   // config ('global'), was attached for this session ('attached') or could not be ('none').
-  launchAgent(options: { app: 'claude' | 'codex'; projectId: string }): Promise<AgentLaunchResult>;
+  launchAgent(options: { app: 'claude' | 'codex'; projectId: string; task?: string; modelPreference?: 'auto' | 'haiku' | 'sonnet' | 'opus'; effort?: 'low' | 'medium' | 'high' }): Promise<AgentLaunchResult>;
   // Preferences: merge Summon's Claude hooks into ~/.claude/settings.json after a timestamped backup. Click only.
   installClaudeHooks(): Promise<{ installed: boolean; backup: string | null; events: string[] }>;
   claudeHooksStatus(): Promise<ClaudeHooksStatus>;
   visualRepository(repoId: string, options?: { refresh?: boolean }): Promise<VisualRepository>;
+  workTree(options?: { repoId?: string | null }): Promise<WorkTreeSnapshot>;
+  workRecovery?(options: { repoId: string; offset?: number; limit?: number; includeReviewed?: boolean }): Promise<WorkRecoverySnapshot>;
+  setWorkRecoveryEnabled?(options: { repoId: string; enabled: boolean }): Promise<WorkRecoverySnapshot>;
+  scanWorkRecovery?(options: { repoId: string }): Promise<WorkRecoverySnapshot>;
+  reviewWorkRecovery?(options: { repoId: string; id: string; reviewed: boolean }): Promise<WorkRecoverySnapshot>;
   saveVisualGoal(input: VisualGoalInput): Promise<VisualGoal[]>;
+  contextReasoning?(options?: { repoId?: string | null; refresh?: boolean; release?: boolean }): Promise<ContextReasoningView>;
+  setContextReasoningSettings?(patch: Partial<ContextReasoningSettings>): Promise<ContextReasoningView>;
 };
 // The usage meter: what each CLI reports about its own subscription windows (src/core/usage.mjs). Unknown usage is a
 // status, never 0 %. stale is set by main when a reading is older than 20 minutes; the engine choice ignores stale readings.
 export type UsageProvider = 'claude' | 'codex';
+export type RoutingOptions = { effort?: 'auto' | 'low' | 'medium' | 'high' };
+export type TaskProfile = { kind: 'coding' | 'writing' | 'research' | 'reasoning' | 'general'; complexity: 'quick' | 'standard' | 'complex'; effort: 'low' | 'medium' | 'high'; reason: string };
+export type RoutingHistory = { count: number; rated: number; problem: string | null };
+export type RoutePreview = { engine: UsageProvider; reason: string; profile: TaskProfile; effort: 'low' | 'medium' | 'high'; model: string | null; history: RoutingHistory };
+export type RoutedAnswer = { text: string; engine?: UsageProvider; reason?: string; effort?: string; model?: string | null; profile?: TaskProfile; routeId?: string };
 export type UsageStatus = 'ok' | 'not_signed_in' | 'not_installed' | 'not_applicable' | 'error';
 export type UsageWindow = { id: string; label: string; usedPercent: number; resetsAt: string | null };
 export type UsageReport = { provider: UsageProvider; plan: string | null; status: UsageStatus; windows: UsageWindow[]; fetchedAt: string; error?: string; stale?: boolean };
 export type UsageSettings = { usageCeiling: number; defaultEngine: UsageProvider };
 export type UsageView = { version: 1; settings: UsageSettings; providers: Record<UsageProvider, UsageReport | null>; refreshing: UsageProvider[]; problem: string | null };
-export type AgentLaunchResult = { app: string; tag: string; sessionId: string | null; folder: string; hooks: boolean; mcp: 'global' | 'attached' | 'none' };
+export type AgentLaunchResult = { app: string; tag: string; sessionId: string | null; folder: string; hooks: boolean; mcp: 'global' | 'attached' | 'none'; modelSelection?: { model: string | null; name: string | null; reason: string; score?: number; category?: string | null; source?: string; effort?: string }; routing?: TaskProfile & { effortSource: 'task' | 'override' } };
 export type ClaudeHooksStatus = { claude: { installed: boolean; current: boolean } };
 export type SummonPanel = 'agent-sessions';
 
@@ -123,10 +140,12 @@ export type AgentSessionGroupId = 'needs-you' | 'new' | 'working' | 'open' | 'in
 export type AgentSessionWork = { added: number | null; removed: number | null; files: number | null; area: string | null;
   scope: 'session' | 'folder'; workstream: string | null; workstreamState: string | null };
 export type AgentSession = { key: string; app: AgentApp; surface: 'desktop' | 'terminal' | 'ide' | 'cli' | 'background'; appLabel: string; title: string; titleIsFallback: boolean;
+  originalTitle?: string; titleReasoning?: ContextInference;
   project: string | null; placeId: string | null; repoId: string | null; placeLabel: string | null; folder: string | null; branch: string | null;
   group: AgentSessionGroupId; activity: 'working' | 'needs-you' | 'failed' | 'open' | 'quiet' | 'interrupted' | 'unknown'; reason: string | null;
   stateText: string; sinceText?: string | null; sinceAt: string | null; updatedAt: string | null; unread: boolean; pinned: boolean; live: boolean;
   confidence: 'reported' | 'inferred'; helpers: number; work: CountedAgentSessionWork | null; workText: string;
+  children?: AgentChild[]; helpersInferred?: boolean;
   // 'summon' when Summon started this session itself (Summon's own fact, never app text); null for every other row.
   startedFrom: 'summon' | null;
   openable: 'link' | 'copy' | 'folder' | 'none'; openHint: string };
@@ -169,10 +188,25 @@ export type AgentSessionAddress = { headline: string | null; titleIsAuto: boolea
 export type LocatedAgentSession = AgentSession & Partial<AgentSessionAddress>;
 
 // Visual workspace: local commit ancestry, observed imports, explicit goals and reported hook events.
-export type VisualGoalStatus = 'planned' | 'working' | 'blocked' | 'done';
-export type VisualGoalLinks = { placeId: string | null; branch: string | null; sessionKey: string | null; component: string | null };
-export type VisualGoal = { id: string; repoId: string; title: string; status: VisualGoalStatus; parentId: string | null; dependsOn: string[]; links: VisualGoalLinks; createdAt: string; updatedAt: string };
-export type VisualGoalInput = { repoId: string; id?: string; title?: string; status?: VisualGoalStatus; parentId?: string | null; dependsOn?: string[]; links?: Partial<VisualGoalLinks> };
+export type VisualGoalStatus = 'planned' | 'working' | 'blocked' | 'needs-verification' | 'done' | 'deferred' | 'dismissed';
+export type AgentChild = { key: string; id: string; parentSessionKey: string; provider: 'claude' | 'codex'; label: string; activity: AgentSession['activity']; confidence: 'reported' | 'inferred'; startedAt: string | null; updatedAt: string; endedAt: string | null };
+export type CrossRepoDependency = { repoId: string; goalId: string };
+export type WorkTreeSnapshot = { repos: WifRepo[]; goals: VisualGoal[]; sessions: AgentSession[]; readAt: string; warnings: string[]; externalGoals: Array<Pick<VisualGoal, 'repoId' | 'id' | 'title' | 'status'>>; externalRepos: Array<{ id: string; name: string }> };
+export type WorkRecoveryEvent = { id: string; provider: 'claude' | 'codex'; sessionKey: string; role: 'user' | 'assistant'; text: string; at: string | null; capturedAt: string; truncated: boolean; reviewedAt: string | null };
+export type WorkRecoverySnapshot = { repoId: string; enabled: boolean; enabledAt: string | null; paused: boolean; checkedAt: string | null; pending: number; total: number; sources: number; hasMore: boolean; warnings: string[]; error: string | null; items: WorkRecoveryEvent[]; nextOffset: number | null };
+export type VisualGoalLinks = { placeId: string | null; branch: string | null; sessionKey: string | null; component: string | null; agentId?: string | null };
+export type ContextInference = { summary: string; evidence: string[]; confidence: 'high' | 'medium' | 'low'; engine: string; model: string | null; updatedAt: string };
+export type ContextReasoningSettings = { enabled: boolean; engine: 'auto' | 'local' | 'claude' | 'codex' };
+export type ContextReasoningView = { repoId?: string | null; settings: ContextReasoningSettings; status: 'idle' | 'running' | 'ready' | 'error' | 'disabled'; updatedAt: string | null; engine: string | null; model: string | null; error: string | null; summary: string; goals: VisualGoal[]; sessionTitles: Array<{ sessionKey: string; title: string; summary: string; evidence: string[]; confidence: ContextInference['confidence'] }>; stale: boolean };
+export type WorkRecordFields = {
+  acceptanceCriteria: string; nextStep: string; checklist: Array<{ id: string; text: string; done: boolean }>;
+  findings: Array<{ id: string; text: string; evidence: string; revisitWhen: string }>; evidence: Array<{ id: string; summary: string; reference: string }>;
+  ownerSessionKey: string | null; scopePaths: string[]; coordinationKeys: string[]; serialWith: string[];
+  origin: { summary: string; evidence: string[]; capturedAt: string } | null;
+  completion: { kind: 'reported' | 'confirmed' | 'legacy'; summary: string; reference: string } | null;
+};
+export type VisualGoal = Partial<WorkRecordFields> & { revision?: number; sessionKeys?: string[]; history?: Array<{ at: string; actor: 'user' | 'agent'; status: VisualGoalStatus; nextStep: string; sessionKey: string | null }>;  id: string; repoId: string; title: string; status: VisualGoalStatus; parentId: string | null; dependsOn: string[]; crossRepoDependsOn?: CrossRepoDependency[]; links: VisualGoalLinks; createdAt: string; updatedAt: string; inference?: ContextInference };
+export type VisualGoalInput = Partial<WorkRecordFields> & { repoId: string; id?: string; expectedRevision?: number; title?: string; status?: VisualGoalStatus; parentId?: string | null; dependsOn?: string[]; crossRepoDependsOn?: CrossRepoDependency[]; links?: Partial<VisualGoalLinks> };
 export type VisualCommit = { id: string; parents: string[]; subject: string; at: string | null };
 export type VisualRef = { name: string; commitId: string; kind: 'branch' | 'remote' | 'tag' | 'head' };
 export type VisualCodebaseNode = { id: string; label: string; path: string; files: number; changed: number };
@@ -182,7 +216,7 @@ export type VisualTrace = { sessionKey: string; events: VisualTraceEvent[]; trun
 export type VisualRepository = { version: 1; repoId: string; scannedAt: string;
   git: { commits: VisualCommit[]; refs: VisualRef[]; truncated: boolean; error: string | null };
   codebase: { nodes: VisualCodebaseNode[]; edges: VisualCodebaseEdge[]; truncated: boolean; error: string | null; note?: string | null; mode: 'imports' };
-  goals: VisualGoal[]; traces: VisualTrace[]; warnings: string[] };
+  goals: VisualGoal[]; traces: VisualTrace[]; warnings: string[]; reasoning?: ContextReasoningView };
 
 // What the core actually puts in AgentSessionAddress above.
 // headline is never empty: '<Project> · <piece of work>' when the session's own edited files fall in one of the

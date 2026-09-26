@@ -17,6 +17,16 @@ const raw = (socketPath, line) => new Promise((resolve, reject) => {
 const service = { snapshot: () => ({ projects: [], events: [], files: [], settings: {}, health: {}, currentProjectId: null, activity: null }) };
 const event = (extra = {}) => ({ method: 'hook', v: 1, app: 'claude', event: 'PreToolUse', sessionId: SESSION, cwd: '/Users/x/Projects/Y', toolName: 'Edit', kind: null, launch: null, ...extra });
 
+test('child hook metadata is identifier-only and preserves optional compatibility', () => {
+  const normalized = normalizeHook(event({ event: 'SubagentStart', agentId: 'aa1b-2', agentType: 'general-purpose' }));
+  assert.equal(normalized.agentId, 'aa1b-2');
+  assert.equal(normalized.agentType, 'general-purpose');
+  for (const patch of [{ agentId: '../x' }, { agentId: 'a'.repeat(201) }, { agentType: 'SECRET task instructions' }, { agentType: 'a'.repeat(121) }, { agentId: 7 }, { app: 'codex', event: 'agent-turn-complete', agentId: 'a' }]) {
+    assert.throws(() => normalizeHook(event(patch)), /Invalid hook agent/);
+  }
+  assert.ok(!Object.hasOwn(normalizeHook(event()), 'agentId'));
+});
+
 test('accepted hook events reach noteHook with exactly the normalized fields and re-arm the count once', async t => {
   const dir = await mkdtemp('/tmp/summon-hook-rpc-');
   const socketPath = path.join(dir, 's.sock');

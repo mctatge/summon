@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHookLedger, hookActivity } from '../src/core/hook-events.mjs';
+import { setSealedSegments } from '../src/core/workstreams.mjs';
 
 // The ledger behind "sessions report through hooks". Everything here is fabricated; SECRET marks text that must never land in the file.
 const MIN = 60_000;
@@ -23,11 +24,64 @@ async function ledger(t, extra = {}) {
 }
 const claude = (sessionId, event, extra = {}) => ({ app: 'claude', event, sessionId, cwd: '/Users/someone/Projects/Demo', toolName: null, kind: null, launch: null, ...extra });
 
+test('child lifecycle survives restart without altering parent state or retaining child content', async t => {
+  const { led, clock, dataDir, file } = await ledger(t);
+  led.record(claude(U(90), 'Stop'));
+  const parentAt = led.forApp('claude').get(U(90)).stateAt;
+  clock.at += 1000;
+  const child = { agentId: 'a19b-child', agentType: 'general-purpose', cwd: '/Users/someone/Projects/Other', prompt: SECRET, last_assistant_message: SECRET, agent_transcript_path: `/private/${SECRET}.jsonl` };
+  led.record(claude(U(90), 'SubagentStart', child));
+  clock.at += 1000;
+  led.record(claude(U(90), 'PermissionRequest', child));
+  let parent = led.forApp('claude').get(U(90));
+  assert.deepEqual([parent.state, parent.stateAt, parent.cwd], ['open', parentAt, '/Users/someone/Projects/Demo']);
+  assert.deepEqual([parent.children[0].state, parent.children[0].endedAt], ['needs-you', null]);
+  clock.at += 1000;
+  led.record(claude(U(90), 'SubagentStop', child));
+  led.record(claude(U(90), 'SubagentStart')); // legacy reporter provides no identity; no invented child or parent activity.
+  parent = led.forApp('claude').get(U(90));
+  assert.equal(parent.children.length, 1);
+  assert.deepEqual([parent.state, parent.children[0].state, parent.children[0].endedAt], ['open', 'ended', clock.at]);
+  await led.close();
+  const stored = await fs.readFile(file, 'utf8');
+  assert.ok(!stored.includes(SECRET));
+  const restored = await createHookLedger({ dataDir, now: () => clock.at });
+  t.after(() => restored.close());
+  assert.deepEqual(restored.forApp('claude').get(U(90)).children, parent.children);
+  assert.equal(restored.trace('claude', U(90)).events.find(event => event.event === 'SubagentStop').agentId, child.agentId);
+  clock.at += 1000;
+  restored.record(claude(U(90), 'SubagentStart', child));
+  assert.equal(restored.forApp('claude').get(U(90)).children[0].endedAt, null, 'a new observed start reopens the helper, never the goal');
+});
+
+test('child ledger retention is bounded independently and invalid identity is rejected', async t => {
+  const { led, clock } = await ledger(t, { limits: { childrenPerSession: 2 } });
+  for (let index = 0; index < 4; index++) { clock.at++; led.record(claude(U(91), 'SubagentStart', { agentId: `a-${index}` })); }
+  assert.deepEqual(led.forApp('claude').get(U(91)).children.map(child => child.id), ['a-2', 'a-3']);
+  assert.throws(() => led.record(claude(U(91), 'SubagentStart', { agentId: '../SECRET' })), /Invalid hook agentId/);
+  assert.throws(() => led.record(claude(U(91), 'SubagentStart', { agentId: 'valid', agentType: 'private text here' })), /Invalid hook agentType/);
+  clock.at += 8 * DAY;
+  assert.equal(led.forApp('claude').size, 0);
+});
+
+test('child trace follows current sealed-folder policy, including after restart', async t => {
+  const { led, dataDir, clock } = await ledger(t);
+  setSealedSegments(['sealed-client']);
+  t.after(() => setSealedSegments([]));
+  led.record(claude(U(92), 'Stop'));
+  led.record(claude(U(92), 'SubagentStart', { agentId: 'hidden-child', agentType: 'Explore', cwd: '/Users/x/sealed-client' }));
+  assert.deepEqual(led.trace('claude', U(92)).events.map(event => event.event), ['Stop']);
+  await led.close();
+  const restored = await createHookLedger({ dataDir, now: () => clock.at });
+  t.after(() => restored.close());
+  assert.deepEqual(restored.trace('claude', U(92)).events.map(event => event.event), ['Stop']);
+});
+
 test('hookActivity maps every subscribed event to a state word, and unknown kinds to nothing', () => {
   const cases = [
     ['claude', 'SessionStart', null, 'open', null], ['claude', 'SessionStart', 'startup', 'open', null], ['claude', 'SessionStart', 'resume', 'open', null], ['claude', 'SessionStart', 'clear', 'open', null], ['claude', 'UserPromptSubmit', null, 'working', null], ['claude', 'PreToolUse', null, 'working', null],
     ['claude', 'PostToolUse', null, 'working', null], ['claude', 'PostToolUseFailure', null, 'working', null], ['claude', 'PermissionDenied', null, 'working', null],
-    ['claude', 'SubagentStart', null, 'working', null], ['claude', 'SubagentStop', null, 'working', null], ['claude', 'PreCompact', null, 'working', null], ['claude', 'PostCompact', null, 'working', null],
+    ['claude', 'PreCompact', null, 'working', null], ['claude', 'PostCompact', null, 'working', null],
     ['claude', 'PermissionRequest', null, 'needs-you', 'Waiting for your OK'],
     ['claude', 'Notification', 'permission_prompt', 'needs-you', 'Waiting for your OK'], ['claude', 'Notification', 'worker_permission_prompt', 'needs-you', 'Waiting for your OK'],
     ['claude', 'Notification', 'agent_needs_input', 'needs-you', 'Asked you a question'], ['claude', 'Notification', 'elicitation_dialog', 'needs-you', 'Asked you a question'],
@@ -36,7 +90,7 @@ test('hookActivity maps every subscribed event to a state word, and unknown kind
     ['codex', 'agent-turn-complete', null, 'open', null], ['codex', 'UserPromptSubmit', null, 'working', null], ['codex', 'Stop', null, 'open', null], ['codex', 'SessionEnd', null, 'ended', null],
   ];
   for (const [app, event, kind, state, reason] of cases) assert.deepEqual(hookActivity(app, event, kind), { state, reason }, `${app} ${event} ${kind}`);
-  for (const [app, event, kind] of [['claude', 'SessionStart', 'compact'], ['claude', 'Notification', 'auth_success'], ['claude', 'Notification', 'agent_completed'], ['claude', 'MessageDisplay', null], ['codex', 'PreToolUse', null], ['cursor', 'Stop', null]]) {
+  for (const [app, event, kind] of [['claude', 'SubagentStart', null], ['claude', 'SubagentStop', null], ['claude', 'SessionStart', 'compact'], ['claude', 'Notification', 'auth_success'], ['claude', 'Notification', 'agent_completed'], ['claude', 'MessageDisplay', null], ['codex', 'PreToolUse', null], ['cursor', 'Stop', null]]) {
     assert.equal(hookActivity(app, event, kind), null, `${app} ${event} ${kind}`);
   }
 });

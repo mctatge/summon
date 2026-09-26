@@ -43,7 +43,19 @@ function claude(data) {
   const event = str(data.hook_event_name, 40);
   if (!sessionId || !UUID.test(sessionId) || !event) process.exit(0);
   const kind = event === 'Notification' ? str(data.notification_type, 40) : event === 'SessionStart' ? str(data.source, 40) : event === 'SessionEnd' ? str(data.reason, 40) : null;
-  send({ method: 'hook', v: 1, app: 'claude', event, sessionId: sessionId.toLowerCase(), cwd: str(data.cwd, 1024), toolName: TOOL_EVENTS.has(event) ? str(data.tool_name, 120) : null, kind, launch });
+  // Preserve child identity on every event that supplies it. Never forward subagent prompts, responses or transcript paths.
+  const child = {};
+  for (const [source, target, max] of [['agent_id', 'agentId', 200], ['agent_type', 'agentType', 120]]) {
+    const value = data[source];
+    if (value !== undefined && value !== null) {
+      if (typeof value !== 'string' || value.length > max || !/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value)) {
+        if (source === 'agent_id') process.exit(0);
+        continue; // An unsupported custom type must not hide an otherwise identified child lifecycle.
+      }
+      child[target] = value;
+    }
+  }
+  send({ method: 'hook', v: 1, app: 'claude', event, sessionId: sessionId.toLowerCase(), cwd: str(data.cwd, 1024), toolName: TOOL_EVENTS.has(event) ? str(data.tool_name, 120) : null, kind, launch, ...child });
 }
 
 function codex(data) {

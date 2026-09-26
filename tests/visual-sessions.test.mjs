@@ -1,10 +1,39 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ALL_PROJECTS, getSessionScopes, getVisualSessions, sessionScope } from '../src/renderer/visual-sessions.ts';
+import { ALL_PROJECTS, childActivityText, getSessionScopes, getVisualSessions, getWorkingProjectScope, sessionScope } from '../src/renderer/visual-sessions.ts';
 
 const session = (key, patch = {}) => ({ key, repoId: null, project: null, folder: null, activity: 'working', ...patch });
 const view = (...groups) => ({ groups: groups.map((sessions, i) => ({ id: `group-${i}`, sessions })) });
 const keys = sessions => sessions.map(item => item.key);
+
+test('child stop labels preserve aborted and failed responses without claiming task completion', () => {
+  const endedAt = '2026-09-21T20:00:00Z';
+  for (const ended of [null, endedAt]) {
+    assert.equal(childActivityText({ activity: 'interrupted', endedAt: ended }), 'Interrupted');
+    assert.equal(childActivityText({ activity: 'failed', endedAt: ended }), 'Failed');
+  }
+  for (const activity of ['quiet', 'open', 'unknown']) assert.equal(childActivityText({ activity, endedAt }), 'Finished responding');
+  assert.equal(childActivityText({ activity: 'unknown', endedAt: null }), 'State unavailable');
+  assert.equal(childActivityText({ activity: 'working', endedAt: null }), 'Working');
+  assert.equal(childActivityText({ activity: 'needs-you', endedAt: null }), 'Needs you');
+});
+
+test('Working in selects its project before repository discovery or reasoning finishes', () => {
+  const project = { id: 'alpha', name: 'Alpha' };
+  assert.deepEqual(getWorkingProjectScope(project, null), { value: 'repo:alpha', label: 'Alpha', repoId: 'alpha' });
+  assert.equal(getWorkingProjectScope(null, null), null);
+  assert.equal(getWorkingProjectScope(undefined, []), null);
+  const repos = [{ id: 'other', projectId: 'other', name: 'Alpha' }, { id: 'repo-alpha', projectId: 'alpha', name: 'Renamed repo' }];
+  assert.deepEqual(getWorkingProjectScope(project, repos), { value: 'repo:repo-alpha', label: 'Alpha', repoId: 'repo-alpha' });
+});
+
+test('a selected non-Git workspace stays selected after discovery and filters its sessions', () => {
+  const scope = getWorkingProjectScope({ id: 'notes', name: 'Research notes' }, []);
+  assert.deepEqual(scope, { value: 'project:Research notes', label: 'Research notes', repoId: null });
+  assert.deepEqual(keys(getVisualSessions(view([
+    session('notes', { project: 'Research notes' }), session('other', { project: 'Other notes' }),
+  ]), scope.value)), ['notes']);
+});
 
 test('all projects includes cross-project, non-git, folder-only, and unattributed sessions', () => {
   const sessions = [

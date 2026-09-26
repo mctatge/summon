@@ -17,14 +17,16 @@ test('native startup survives a failed file scan and quit waits for request clea
   const handlers=new Map(),shortcuts=new Map(),sent=[];const fnMonitors=[];let fnStarts=0,fnStops=0;
   let trayCreations=0,trayMenu,wakeStarts=0,permissionRequest,permissionCheck;
   const launches=[];
-  const warmCalls=[],transcriptionCalls=[],trayImages=[];
+  const warmCalls=[],transcriptionCalls=[],trayImages=[],backgroundColors=[];
+  const nativeTheme=Object.assign(new EventEmitter(),{themeSource:'light',shouldUseDarkColors:true});
   let currentVoiceStatus={state:'off',mode:'off',micActive:false};
   let trayDestroys=0,stopCalls=0,finalQuits=0,cleanupStarted=false,cleanupFinished=false,bundledLoads=0,nativeKills=0,voiceCloses=0,voiceAcknowledgments=0,transcriberCloses=0;
   const app=new EventEmitter();
   Object.assign(app,{isPackaged:true,dock:{hide(){assert.fail('Summon keeps its Dock icon; there is no hidden mode.');}},setName(){},requestSingleInstanceLock:()=>true,getPath:()=>'/private/tmp/synthetic-summon-data',whenReady:()=>Promise.resolve(),quit(){const event={cancelled:false,preventDefault(){this.cancelled=true;}};app.emit('before-quit',event);if(!event.cancelled)finalQuits++;}});
   class Window extends EventEmitter{
-    constructor(options){super();this.options=options;windowInstance=this;this.webContents=new EventEmitter();Object.assign(this.webContents,{mainFrame:{},send(channel){sent.push(channel);},setWindowOpenHandler(){}});}
-    isDestroyed(){return false;}
+    constructor(options){super();assert.equal(nativeTheme.themeSource,'system','System appearance is selected before creating the native window.');this.options=options;windowInstance=this;this.webContents=new EventEmitter();Object.assign(this.webContents,{mainFrame:{},send(channel){sent.push(channel);},setWindowOpenHandler(){}});}
+    isDestroyed(){return this.destroyed===true;}
+    setBackgroundColor(color){backgroundColors.push(color);}
     loadFile(){bundledLoads++;return Promise.resolve();}
     loadURL(){assert.fail('A packaged app must never load SUMMON_DEV_URL.');}
     show(){showWindow();}
@@ -41,7 +43,11 @@ test('native startup survives a failed file scan and quit waits for request clea
   // filesystem watcher, microphone, or native child is launched by this test.
   const source=(await readFile(sourceURL,'utf8')).replace(/^import .*;\n/gm,'').replaceAll('import.meta.url',JSON.stringify(sourceURL.href));
   vm.runInNewContext(source,{
-    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu:noop},screen:{},powerMonitor:{on:noop},
+    app,BrowserWindow:Window,Tray,Menu:{buildFromTemplate:x=>x,setApplicationMenu:noop},screen:{},powerMonitor:{on:noop},nativeTheme,
+    createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
+    createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
+    createContextReasoning:async()=>({read:()=>({settings:{enabled:false,engine:'auto'}}),request:()=>({settings:{enabled:false,engine:'auto'}}),decorateSessions:view=>view,close:async()=>{}}),runContextReasoning:()=>assert.fail('No reasoning model runs in this fixture.'),
+    createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopVoice:options=>{assert.equal(options.mainWindow,windowInstance);assert.equal(typeof options.onStateChange,'function');return {publish:noop,updateVoice:value=>{voiceAcknowledgments++;currentVoiceStatus=value;options.onStateChange(value);},snapshot:()=>currentVoiceStatus,toggle:noop,stop:async()=>{},close:async()=>{voiceCloses++;}};},
     createTranscriber:options=>{assert.equal(options.workerPath,'/private/tmp/synthetic-resources/summon-transcribe');return {status:()=>({ready:false}),warm:model=>{warmCalls.push(model);return warming;},transcribe:async(audio,model)=>{transcriptionCalls.push({audio,model});return {text:'Synthetic phrase'};},release:async()=>{},close:async()=>{transcriberCloses++;finishWarm();await transcriberCleanup;}};},
     nativeImage:{createFromBitmap:pixels=>({pixels,setTemplateImage(value){this.template=value;}}),createEmpty:()=>({})},
@@ -58,6 +64,7 @@ test('native startup survives a failed file scan and quit waits for request clea
     askEngine:()=>answer.finally(async()=>{cleanupStarted=true;await cleanup;cleanupFinished=true;}),
     createRpcServer:async()=>async()=>{},run:missing,scrubbedEnv:()=>({}),executable:missing,stopProcesses:async()=>{failAnswer(new Error('Synthetic shutdown cancellation'));},
     // The usage meter and engine choice: stubbed so no timer or CLI of theirs runs in this lifecycle.
+    createTaskRouter:async ({ask,selectEngine,getUsage,getSettings})=>({choose:task=>selectEngine({task,usage:getUsage(),settings:getSettings()}),answer:(engine,text,snapshot,options)=>ask(engine,text,snapshot,options),close:async()=>{}}),
     createUsage:async()=>({status:()=>({version:1,settings:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},refreshing:[],problem:null}),settings:()=>({usageCeiling:85,defaultEngine:'claude'}),refresh:async()=>({}),updateSettings:async()=>({}),start:noop,pause:noop,resume:noop,stop:noop,close:async()=>{}}),usageText:()=>'',readClaudeUsage:missing,readCodexUsage:missing,chooseEngine:()=>({engine:'claude',reason:'stub'}),spawnLongLived:missing,
     loadSealedSegments:dir=>{sealedDirs.push(dir);return [];},
     createLauncher:()=>({launch:()=>assert.fail('Nothing launches at startup.'),installClaudeHooks:()=>assert.fail('Nothing installs hooks at startup.'),hookStatus:async()=>({claude:{installed:false,current:false}})}),
@@ -65,6 +72,10 @@ test('native startup survives a failed file scan and quit waits for request clea
   },{filename:fileURLToPath(sourceURL)});
   await shown;
   await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(windowInstance.options.backgroundColor,'#191b1a','Dark startup paints a dark canvas before the renderer loads.');
+  nativeTheme.shouldUseDarkColors=false;nativeTheme.emit('updated');
+  nativeTheme.shouldUseDarkColors=true;nativeTheme.emit('updated');
+  assert.deepEqual(backgroundColors,['#eaeae8','#191b1a'],'An open window follows appearance changes in both directions.');
   assert.deepEqual(sealedDirs,[app.getPath('userData')],'sealed.json is applied once, from the data folder, before any reader starts.');
   assert.equal(launches.length,1,'Activity monitoring starts while the independent file scan is pending.');
   assert.equal(fnMonitors.length,1,'The Fn shortcut helper is always supervised.');assert.equal(typeof fnMonitors[0].onTap,'function');assert.equal(fnMonitors[0].executable,'/private/tmp/synthetic-resources/summon-fn-key');
@@ -86,6 +97,18 @@ test('native startup survives a failed file scan and quit waits for request clea
   assert.equal(permissionCheck(windowInstance.webContents,'media','',{isMainFrame:false,mediaType:'audio'}),false);
   assert.equal(permissionCheck(windowInstance.webContents,'media','',{isMainFrame:true,mediaType:'video'}),false);
   assert.equal(permissionCheck({},'media','',{isMainFrame:true,mediaType:'audio'}),false);
+  // Fullscreen belongs only to the trusted main frame. Other windows, subframes,
+  // missing frame identity, and unrelated permission kinds remain denied.
+  const fullScreenGrant=(contents,details)=>{let value;permissionRequest(contents,'fullscreen',decision=>{value=decision;},details);return value;};
+  assert.equal(fullScreenGrant(windowInstance.webContents,{isMainFrame:true}),true);
+  assert.equal(fullScreenGrant(windowInstance.webContents,{isMainFrame:false}),false);
+  assert.equal(fullScreenGrant(windowInstance.webContents,{}),false);
+  assert.equal(fullScreenGrant({},{isMainFrame:true}),false);
+  assert.equal(permissionCheck(windowInstance.webContents,'fullscreen','',{isMainFrame:true}),true);
+  assert.equal(permissionCheck(windowInstance.webContents,'fullscreen','',{isMainFrame:false}),false);
+  assert.equal(permissionCheck(windowInstance.webContents,'fullscreen','',{}),false);
+  assert.equal(permissionCheck({},'fullscreen','',{isMainFrame:true}),false);
+  assert.equal(permissionCheck(windowInstance.webContents,'geolocation','',{isMainFrame:true}),false);
   failScan(new Error('Synthetic initial scan save failure: ENOSPC'));
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(nativeKills,0,'File scan failures do not stop the activity monitor.');
@@ -139,4 +162,8 @@ test('native startup survives a failed file scan and quit waits for request clea
   assert.equal(transcriberCloses,1);
   assert.equal(trayDestroys,0,'A quiet menu bar never had a count item to take away.');
   assert.equal(shortcuts.size,0,'Quitting unregisters both global shortcuts.');
+  windowInstance.destroyed=true;nativeTheme.emit('updated');
+  assert.equal(backgroundColors.length,2,'A theme change cannot address a destroyed native window.');
+  windowInstance.emit('closed');
+  assert.equal(nativeTheme.listenerCount('updated'),0,'Closing the native window releases its appearance listener.');
 });

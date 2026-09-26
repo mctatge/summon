@@ -17,6 +17,14 @@ const ACTIVITY_ORDER: Record<AgentSession['activity'], number> = {
   'needs-you': 0, failed: 1, working: 2, open: 3, interrupted: 4, quiet: 5, unknown: 6,
 };
 
+/** A stopped response keeps its observed failure state; ending never proves task completion. */
+export function childActivityText(child: Pick<NonNullable<AgentSession['children']>[number], 'activity' | 'endedAt'>): string {
+  if (child.activity === 'failed') return 'Failed';
+  if (child.activity === 'interrupted') return 'Interrupted';
+  if (child.endedAt) return 'Finished responding';
+  return ({ working: 'Working', 'needs-you': 'Needs you', open: 'Open', quiet: 'Quiet', unknown: 'State unavailable' })[child.activity] ?? 'State unavailable';
+}
+
 /** Only the session's reported attribution determines its scope. A project name
  * or folder that resembles a repository never silently becomes that repository. */
 export function sessionScope(session: AgentSession): string {

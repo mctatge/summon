@@ -48,6 +48,27 @@ const claudeInput = (event, extra = {}) => JSON.stringify({
   prompt: SECRET, tool_input: { command: SECRET }, tool_response: { output: SECRET }, last_assistant_message: SECRET, message: SECRET, title: SECRET, session_title: SECRET, ...extra,
 });
 
+test('Claude child start, tools and stop forward identity but never child transcript or response', async t => {
+  const dir = await mkdtemp('/tmp/summon-hook-child-');
+  const fake = await server(dir);
+  t.after(async () => { await fake.close(); await rm(dir, { recursive: true, force: true }); });
+  const env = { SUMMON_SOCKET: fake.socketPath };
+  for (const event of ['SubagentStart', 'PreToolUse', 'SubagentStop']) {
+    await run(['claude'], { env, stdin: claudeInput(event, { agent_id: 'a12-helper', agent_type: 'Explore', tool_name: 'Read', agent_transcript_path: `/private/${SECRET}.jsonl` }) });
+  }
+  assert.equal(fake.lines.length, 3);
+  for (const line of fake.lines) {
+    const row = JSON.parse(line);
+    assert.equal(row.agentId, 'a12-helper'); assert.equal(row.agentType, 'Explore');
+    assert.ok(!line.includes(SECRET)); assert.ok(!line.includes('agent_transcript_path'));
+  }
+  await run(['claude'], { env, stdin: claudeInput('SubagentStart', { agent_id: '../secret' }) });
+  assert.equal(fake.lines.length, 3);
+  await run(['claude'], { env, stdin: claudeInput('SubagentStart', { agent_id: 'valid-custom', agent_type: 'SECRET custom instructions' }) });
+  assert.equal(JSON.parse(fake.lines[3]).agentId, 'valid-custom');
+  assert.equal(JSON.parse(fake.lines[3]).agentType, undefined);
+});
+
 test('Claude events cross as one line with only the known fields, and never the prompt, tool input or transcript path', async t => {
   const dir = await mkdtemp('/tmp/summon-hook-');
   const fake = await server(dir);

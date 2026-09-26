@@ -1132,6 +1132,16 @@ This expands capture scope only through the session-specific **Read screen text 
 
 The trusted-window desktop controls disclose reasoning and capture choices before a task starts. They cannot change while a task or proposal is active. Terminal, credential, security and consequential-control exclusions, fresh native revalidation and evidence-based completion remain. The restricted Ask allowed-tools boundary and RPC/MCP desktop-action boundary are unchanged. This does not install a local model, grant OS access automatically, claim general canvas support or inherit TypeSafe's published performance.
 
+## 2026-09-21 — Work tree and provider delegation metadata
+
+The primary workbench is a durable work graph with a simple Work / Assistant / Resources navigation. Explicit project selection is the scope boundary. Cross-project context appears in a selected workspace only as an explicitly linked dependency stub; global views can connect the full records. Parent grouping, task prerequisites, folder isolation and session delegation are separate relationships.
+
+Allow bounded metadata-only Claude child lifecycle reporting (`agentId`, `agentType`) and explicit Codex parent-child metadata from local session storage. Child events do not overwrite parent lifecycle state. Keep child identities and parent edges where observed, label inference and unavailable status, and never collect prompts/tool arguments/output for this graph. A child stopping or a lead session closing never completes a durable record. Existing hooks are updated only through the existing authorized installer, with a backup and preservation of unrelated hooks.
+
+Work records may store `crossRepoDependsOn: [{repoId, goalId}]` and `links.agentId` alongside a linked parent session. New child associations must exist under that session; unchanged historical associations remain after the provider drops the child. Cross-project links require available registered projects, enforce global acyclicity and dependency gates, and retain optimistic revisions. This extends local relationship metadata only; it does not expand agent execution permissions, auth, cloud context sharing, or goal completion authority.
+
+The owner subsequently chose a single left-to-right hierarchy for this same map: projects, goals, then tasks. Saved parent links determine branches; prerequisites remain a separate selected-task overlay. Branches unfold on demand, with sibling branches collapsed and camera zoom preserved. Agent icons and animated activity remain on hierarchy connectors, with provider teams behind the agent disclosure. This replaces the broad bottom-up packing without altering stored relationships or adding a separate overview/detail view. Task details and child creation remain reachable within the hierarchy.
+
 ## 2026-09-21 — Listening status belongs in the menu-bar star
 
 The owner requested removing the always-on-top listening widget because the menu-bar star is sufficient. Remove the widget window, renderer, preload, IPC controls and position persistence. The star is green strictly while the capture owner reports `micActive: true`, and monochrome otherwise; requested listening, startup, transcription and processing states alone never light it. The menu retains **Start hands-free listening**, **Stop listening** and **Voice command**, with detailed voice status in the workbench.

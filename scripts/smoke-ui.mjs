@@ -14,12 +14,20 @@ const electron=await _electron.launch({executablePath:require('electron'),args:[
 try{
   const page=await electron.firstWindow();const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.waitForFunction(()=>Boolean(window.summon),{timeout:30000});
-  await page.getByRole('heading',{name:'Your workspace',exact:true}).waitFor();
+  await page.getByRole('heading',{name:'All projects',exact:true}).waitFor();
+  assert.equal(await page.getByRole('group',{name:'Choose accent color',exact:true}).count(),0,'Accent controls belong in Preferences, not the dashboard');
+  await page.getByRole('button',{name:'Preferences',exact:true}).last().click();
+  await page.getByRole('dialog').waitFor();
   assert.equal(await page.getByRole('button',{name:'Black accent',exact:true}).getAttribute('aria-pressed'),'true');
   await page.getByRole('button',{name:'Forest accent',exact:true}).click();
   await page.waitForFunction(async()=>(await window.summon.snapshot()).settings.accentColor==='#32664c');
   await page.reload();
-  await page.getByRole('heading',{name:'Your workspace',exact:true}).waitFor();
+  await page.getByRole('heading',{name:'All projects',exact:true}).waitFor();
+  assert.equal(await page.getByRole('group',{name:'Choose accent color',exact:true}).count(),0,'Reload keeps accent controls off the dashboard');
+  const commandBox=page.getByRole('textbox',{name:'Ask Summon or find a file',exact:true});
+  await commandBox.fill('Keep this draft');
+  await page.getByRole('button',{name:'Preferences',exact:true}).last().click();
+  await page.getByRole('dialog').waitFor();
   assert.equal(await page.getByRole('button',{name:'Forest accent',exact:true}).getAttribute('aria-pressed'),'true','Accent survives renderer reload');
   await page.locator('summary[aria-label="Custom accent color"]').click();
   await page.getByRole('textbox',{name:'Accent hex color',exact:true}).fill('#ffffff');
@@ -30,13 +38,15 @@ try{
   assert.notEqual(contrast.meter,'#ffffff','White custom accent must retain visible meters');
   await page.getByRole('button',{name:'Black accent',exact:true}).click();
   await page.waitForFunction(async()=>(await window.summon.snapshot()).settings.accentColor==='#141615');
-  const commandBox=page.getByRole('textbox',{name:'Ask Summon or find a file',exact:true});
-  await commandBox.fill('Keep this draft');
   await page.locator('summary[aria-label="Custom accent color"]').click();
   await page.getByRole('textbox',{name:'Accent hex color',exact:true}).focus();
   await page.keyboard.press('Escape');
   assert.equal(await page.locator('.accent-custom').evaluate(element=>element.open),false);
-  assert.equal(await commandBox.inputValue(),'Keep this draft','Dismissing the accent picker preserves command input');
+  assert.equal(await page.getByRole('dialog').count(),1,'Dismissing the accent picker keeps Preferences open');
+  assert.equal(await page.locator('input[aria-label="Ask Summon or find a file"]').inputValue(),'Keep this draft','Dismissing the accent picker preserves command input');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.getByRole('dialog').count(),0);
+  assert.equal(await commandBox.inputValue(),'Keep this draft','Closing Preferences preserves command input');
   await commandBox.fill('');
   await page.screenshot({path:'/private/tmp/summon-overview.png',fullPage:true});
   await page.getByRole('button',{name:'New task',exact:true}).click();
@@ -66,6 +76,7 @@ try{
   assert.equal(launchCalls[1].task,undefined,'The task is entered in Terminal after launching');
   assert.equal(launchCalls[1].projectId,(await page.evaluate(()=>window.summon.snapshot())).projects.find(project=>project.name==='Harbor').id);
   assert.equal(await page.getByRole('dialog').count(),0);
+  await page.getByRole('button',{name:'Resources',exact:true}).click();
   await page.getByRole('button',{name:'Files',exact:true}).click();
   await page.getByText('Course model.xlsx',{exact:true}).first().waitFor({timeout:30000});
   await page.getByRole('button',{name:'Observing locally',exact:false}).waitFor({timeout:30000});
@@ -87,6 +98,7 @@ try{
   await commandBox.fill('morning desk');await commandBox.press('Enter');
   await page.getByText('Found 1 matching file.',{exact:false}).waitFor();
   assert.equal((await page.evaluate(()=>window.summon.snapshot())).knowledge.routines[0].useCount,1);
+  await page.getByRole('button',{name:'Resources',exact:true}).click();
   await page.getByRole('button',{name:'Memory & routines',exact:true}).click();
   await page.getByLabel('A fact you want to keep',{exact:true}).fill('The course workbook is our reference for the learning sprint.');
   await page.getByRole('button',{name:'Remember this',exact:true}).click();
@@ -116,7 +128,7 @@ try{
   await page.getByRole('dialog').waitFor();await page.screenshot({path:'/private/tmp/summon-preferences.png',fullPage:true});
   await page.keyboard.press('Escape');
   assert.equal(await page.getByRole('dialog').count(),0);
-  const benchmark=await page.evaluate(()=>window.summon.command('best coding model'));assert.equal(benchmark.kind,'benchmark');assert.match(benchmark.message,/key/);
+  const benchmark=await page.evaluate(()=>window.summon.command('best coding model'));assert.equal(benchmark.kind,'benchmark');const rankingState=(await page.evaluate(()=>window.summon.snapshot())).benchmark;assert.equal(rankingState.source,'https://aistupidlevel.info/');if(!benchmark.failed)assert.ok(rankingState.models.length>0);else assert.ok(rankingState.error);
   if(process.env.SUMMON_VOICE_FIXTURE){
     // Isolate the UI regression from file-routing speed: provide only the
     // recognized-text phase, never a voice-result that could fill the input.
@@ -175,7 +187,7 @@ try{
   const appWindow=await electron.browserWindow(page);await appWindow.evaluate(window=>window.setSize(780,660));await page.screenshot({path:'/private/tmp/summon-compact.png',fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'Compact Files layout fits the window');
   await page.locator('.workspace-main').evaluate(element=>{element.scrollTop=element.scrollHeight;});
-  await page.getByRole('button',{name:'Overview',exact:true}).click();
+  await page.getByRole('button',{name:'Work',exact:true}).click();
   await page.waitForFunction(()=>document.querySelector('.workspace-main').scrollTop===0);
   await page.screenshot({path:'/private/tmp/summon-overview-compact.png',fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true,'Compact overview fits the window');

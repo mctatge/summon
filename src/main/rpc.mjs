@@ -1,10 +1,11 @@
 import net from 'node:net';
 import {chmod,unlink,lstat} from 'node:fs/promises';
 import path from 'node:path';
+import {validateWorkRecoveryRequest} from '../core/work-item-protocol.mjs';
 
 // Hook events from scripts/summon-hook.mjs: one line per event, validated field by field. Anything outside the known
 // keys is refused rather than dropped, so a changed reporter cannot smuggle prompt or transcript text in here.
-const HOOK_KEYS=new Set(['method','v','app','event','sessionId','cwd','toolName','kind','launch']);
+const HOOK_KEYS=new Set(['method','v','app','event','sessionId','cwd','toolName','kind','launch','agentId','agentType']);
 const HOOK_EVENTS={
   claude:new Set(['SessionStart','UserPromptSubmit','PreToolUse','PostToolUse','PostToolUseFailure','PermissionRequest','PermissionDenied','Notification','Stop','StopFailure','SubagentStart','SubagentStop','PreCompact','PostCompact','SessionEnd']),
   codex:new Set(['agent-turn-complete','SessionStart','UserPromptSubmit','Stop','SessionEnd']),
@@ -27,11 +28,18 @@ export function normalizeHook(request,line){
   const toolName=typeof request.toolName==='string'?request.toolName.replace(HOOK_CONTROL,'').slice(0,120)||null:null;
   const kind=typeof request.kind==='string'&&HOOK_KIND.test(request.kind)?request.kind:null;
   const launch=typeof request.launch==='string'&&HOOK_TAG.test(request.launch)?request.launch:null;
-  return {app,event,sessionId,cwd,toolName,kind,launch};
+  const child={};
+  for(const [key,max] of [['agentId',200],['agentType',120]]){
+    const value=request[key];
+    if(value===undefined||value===null)continue;
+    if(app!=='claude'||typeof value!=='string'||value.length>max||!/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/.test(value))throw new Error(`Invalid hook ${key}.`);
+    child[key]=value;
+  }
+  return {app,event,sessionId,cwd,toolName,kind,launch,...child};
 }
 
 export const defaultSocketPath=()=>`/tmp/summon-${process.getuid?.()??'local'}.sock`;
-export async function createRpcServer(service,socketPath=defaultSocketPath(),{knowledge,searchKnowledge,workInFlight,agentSessions,usage,pickEngine,onChange=()=>{},onHook=()=>{}}={}){
+export async function createRpcServer(service,socketPath=defaultSocketPath(),{knowledge,searchKnowledge,workInFlight,agentSessions,workRecords,workRecovery,usage,pickEngine,onChange=()=>{},onHook=()=>{}}={}){
   // Work in flight reads can outlast the 10 s idle limit while repositories are scanned.
   const flight=(request,socket)=>{
     if(!workInFlight)throw new Error('Work in flight is not available in this Summon version.');
@@ -50,11 +58,13 @@ export async function createRpcServer(service,socketPath=defaultSocketPath(),{kn
     socket.setEncoding('utf8');
     socket.on('error',()=>{});
     socket.on('data',async chunk=>{
-      buffer+=chunk;if(buffer.length>32768){socket.destroy();return;}
+      buffer+=chunk;if(Buffer.byteLength(buffer)>1024*1024){socket.destroy();return;}
       if(!buffer.includes('\n'))return;
       const line=buffer.slice(0,buffer.indexOf('\n'));buffer='';
       try{
-        const request=JSON.parse(line);const snapshot=service.snapshot();let result;
+        const request=JSON.parse(line);
+        if(Buffer.byteLength(line)>32768&&!['work-items','work-item-update','work-item-checkpoint'].includes(request?.method))throw new Error('Request too large.');
+        const snapshot=service.snapshot();let result;
         switch(request.method){
           case 'memory-search':if(!knowledge)throw new Error('Memory is not available in this Summon version.');result=await (searchKnowledge||knowledge.search)(request.query,{projectId:request.projectId,limit:request.limit});break;
           case 'remember':if(!knowledge)throw new Error('Memory is not available.');await knowledge.remember({text:request.text,projectId:request.projectId,source:'User request through connected agent'});result={saved:true};onChange();break;
@@ -72,6 +82,26 @@ export async function createRpcServer(service,socketPath=defaultSocketPath(),{kn
             if(request.app!==undefined&&request.app!==null&&!['claude','codex','cursor','hermes'].includes(request.app))throw new Error('Invalid app option.');
             if(request.includeRecent!==undefined&&typeof request.includeRecent!=='boolean')throw new Error('Invalid includeRecent option.');
             result=await agentSessions.read({forAgent:true,maxAgeMs:3000,app:request.app??null,includeRecent:request.includeRecent===true});break;
+          // Structured work records only: the agent boundary cannot confirm completion or change repository files.
+          case 'work-recovery':{
+            const {method,...options}=request;
+            validateWorkRecoveryRequest(options);
+            if(!workRecovery)throw new Error('Work recovery is not available in this Summon version. Rebuild and reopen Summon.');
+            socket.setTimeout(20000);
+            result=await workRecovery.read(options);
+            break;
+          }
+          case 'work-items':
+          case 'work-item-update':
+          case 'work-item-checkpoint':{
+            if(!workRecords)throw new Error('Durable work records are not available in this Summon version.');
+            const {method,...options}=request;
+            socket.setTimeout(20000);
+            if(method==='work-item-checkpoint'&&typeof workRecords.checkpointWorkItem!=='function')throw new Error('Work checkpoints are not available in this Summon version. Rebuild and reopen Summon.');
+            result=method==='work-items'?await workRecords.readWorkItems(options):method==='work-item-checkpoint'?await workRecords.checkpointWorkItem(options):await workRecords.updateWorkItem(options);
+            if(method!=='work-items')onChange();
+            break;
+          }
           case 'select-project':await service.selectProject(request.id);result=service.snapshot().projects.find(p=>p.id===request.id)||null;break;
           // A session reporting on itself. Accepted events reach the ledger only; nothing is opened, launched or read back.
           case 'hook':{
@@ -92,8 +122,8 @@ export async function createRpcServer(service,socketPath=defaultSocketPath(),{kn
             if(typeof pickEngine!=='function')throw new Error('Engine choice is not available in this Summon version.');
             if(request.task!==undefined&&(typeof request.task!=='string'||request.task.length>500))throw new Error('Invalid task option.');
             if(request.engine!==undefined&&request.engine!==null&&!['claude','codex','auto'].includes(request.engine))throw new Error('Invalid engine option.');
-            const choice=pickEngine({engine:request.engine??'auto'});
-            result={engine:choice.engine,reason:choice.reason,usage:usage?usage.status():null};break;
+            const choice=pickEngine({engine:request.engine??'auto',...(request.task?{text:request.task}:{})});
+            result={engine:choice.engine,reason:choice.reason,...(choice.profile?{profile:choice.profile,effort:choice.effort}:{}),usage:usage?usage.status():null};break;
           }
           default:throw new Error('Unsupported operation.');
         }
