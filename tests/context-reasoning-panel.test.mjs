@@ -13,7 +13,7 @@ const { outputText } = ts.transpileModule(source, { compilerOptions: { target: t
 const module = { exports: {} };
 vm.runInThisContext(`(function(require, exports, module) {${outputText}\n})`)(require, module.exports, module);
 const { ContextReasoningPanel, ReasoningEvidence } = module.exports;
-const view = { settings: { enabled: true, engine: 'auto' }, status: 'ready', updatedAt: '2026-09-20T10:00:00Z', engine: 'local', model: 'current-model', error: null, summary: 'Finish the accessible preview.', goals: [], sessionTitles: [], stale: false };
+const view = { settings: { enabled: true, engine: 'auto' }, status: 'ready', updatedAt: '2026-09-20T10:00:00Z', engine: 'local', model: 'current-model', error: null, summary: 'Finish the accessible preview.', goals: [], stale: false };
 const render = (value, props = {}) => renderToStaticMarkup(React.createElement(ContextReasoningPanel, { value, scope: null, busy: false, error: '', available: true, onRefresh() {}, onSettings() {}, ...props }));
 
 test('workspace reading uses only goals attributed to the selected repository', () => {

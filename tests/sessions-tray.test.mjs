@@ -22,7 +22,7 @@ const view=({needsYou=0,working=0,backgroundWorking=0,sessions=[]}={})=>({
 
 // The menu-bar count lives in the real lifecycle, so it is exercised the way tests/lifecycle.test.mjs does:
 // main.mjs runs in a context of injected adapters. No Electron window, tray, timer or child process is real.
-async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
+async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude',names=null}={}){
   let showWindow;
   const shown=new Promise(resolve=>{showWindow=resolve;});
   const fnMonitors=[];let fnStarts=0,fnStops=0;const handlers=new Map(),trays=[],timers=[],power=new Map(),dialogs=[],sent=[],opened=[],shownWindows=[];
@@ -74,7 +74,7 @@ async function launch({stored={trayCount:'needs'},handlerFor=()=>'Claude'}={}){
     // This harness isolates the metadata count; context reasoning is unavailable here and exercised by usage-rpc.
     createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
     createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
-    createContextReasoning:async()=>null,runContextReasoning:()=>assert.fail('The tray never runs a reasoning model.'),
+    createContextReasoning:async()=>null,runContextReasoning:()=>assert.fail('The tray never runs a reasoning model.'),createSessionNames:async()=>names,
     createVisualWorkspace:async()=>({read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
@@ -261,4 +261,16 @@ test('the poll sleeps with the machine and stops when Summon quits',async()=>{
   assert.equal(ctx.timers.length,0,'Quitting stops the poll and leaves no timer of its own behind.');
   assert.equal(ctx.counts()[0].destroyed,true,'Quitting takes the count out of the menu bar.');
   assert.equal(ctx.core.reads.length,reads);
+});
+
+test('menu rows use the board\'s session names while the count stays on the apps\' metadata',async()=>{
+  const names={poll:()=>({}),refresh:async()=>({}),read:()=>({status:'ready',error:null,problem:null,names:{}}),close:async()=>{},
+    decorate:value=>({...value,summary:{...value.summary,needsYou:99},groups:value.groups.map(group=>({...group,sessions:group.sessions.map(item=>item.key==='claude:desktop:a'?{...item,title:'Login bug fix',originalTitle:item.title,titleSource:'summon'}:item)}))})};
+  const ctx=await launch({names});
+  ctx.core.view=view({needsYou:2,sessions:[session('claude:desktop:a'),session('claude:desktop:b')]});
+  await ctx.poll();
+  const tray=ctx.tray();
+  assert.deepEqual(tray.titles,['◐ 2'],'the count is the apps\' own, never the decorated view\'s');
+  tray.emit('right-click');
+  assert.deepEqual(Array.from(tray.menus.at(-1),item=>item.label??item.type).slice(0,2),['Login bug fix · Claude app · Harbor','Excel recorder · Claude app · Harbor']);
 });

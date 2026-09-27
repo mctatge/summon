@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ArrowRight, ChefHat, CircleAlert, Folder, Pause, Play, RotateCcw, Route } from 'lucide-react';
+import { ArrowLeft, ArrowRight, ChefHat, CircleAlert, Flag, Folder, Pause, Play, RotateCcw, Route } from 'lucide-react';
 import type { AgentSession } from './types';
 import { createKitchenScene } from './kitchen-scene';
 import { FullscreenButton } from './FullscreenButton';
+import { APP_TITLE_TIP, appTitle, goalWords, nameDetail, OUTDATED_TIP, OUTDATED_WORD, rowAppTitle, summonNamed } from './session-names';
 import './kitchen-scene.css';
 
 type Props = {
@@ -36,6 +37,9 @@ export default function KitchenScene({ sessions, selected, paused, scopeLabel = 
   const activePage = Math.min(page, pageCount - 1);
   const visible = useMemo(() => sessions.slice(activePage * PAGE_SIZE, (activePage + 1) * PAGE_SIZE), [sessions, activePage]);
   const selectedSession = sessions.find(session => session.key === selected);
+  const selectedGoal = selectedSession ? goalWords(selectedSession) : null;
+  const selectedOriginal = selectedSession ? appTitle(selectedSession) : null;
+  const selectedDetail = selectedSession ? nameDetail(selectedSession) : null;
   const selectedIndex = sessions.findIndex(session => session.key === selected);
   const selectedPage = selectedIndex < 0 ? -1 : Math.floor(selectedIndex / PAGE_SIZE);
   const working = sessions.filter(session => session.activity === 'working').length;
@@ -92,13 +96,13 @@ export default function KitchenScene({ sessions, selected, paused, scopeLabel = 
     </div>
     {pageCount > 1 && <div className="ks-pages"><span>Showing {activePage * PAGE_SIZE + 1}–{Math.min((activePage + 1) * PAGE_SIZE, sessions.length)} of {sessions.length} sessions</span><div><button type="button" className="vw-button" aria-label="Previous kitchen sessions" disabled={activePage === 0} onClick={() => setPage(activePage - 1)}><ArrowLeft size={14} /></button><span>Room {activePage + 1} / {pageCount}</span><button type="button" className="vw-button" aria-label="Next kitchen sessions" disabled={activePage + 1 === pageCount} onClick={() => setPage(activePage + 1)}><ArrowRight size={14} /></button></div></div>}
     <div className="ks-tickets" aria-label="Kitchen sessions">
-      {visible.map((session, index) => <button key={session.key} type="button" className={`ks-session ${session.activity}`} aria-pressed={selected === session.key} onClick={() => onSelect(session)} style={{ '--chef-color': COLORS[index % COLORS.length] } as React.CSSProperties}>
+      {visible.map((session, index) => { const detail = nameDetail(session), original = rowAppTitle(session), app = appTitle(session), goal = goalWords(session); return <button key={session.key} type="button" className={`ks-session ${session.activity}`} aria-pressed={selected === session.key} title={app ? `App title: “${app}”` : undefined} onClick={() => onSelect(session)} style={{ '--chef-color': COLORS[index % COLORS.length] } as React.CSSProperties}>
         <span className="ks-ticket-header"><span className="ks-chef-number">{index + 1}</span><span>{session.appLabel}</span><span className={`vw-session-dot ${session.activity}`} aria-hidden="true" /></span>
         <span className="ks-session-project" title={session.project?.trim() || session.folder?.trim() || 'Unassigned'}><Folder size={11} aria-hidden="true" /><span>{session.project?.trim() || session.folder?.trim() || 'Unassigned'}</span></span>
-        <strong>{session.title}</strong><span className="ks-session-state">{session.confidence === 'inferred' ? 'Probably · ' : ''}{activityLabel[session.activity]}</span><span className="ks-session-detail">{session.stateText}</span>{(session.branch || session.placeLabel) && <span className="ks-session-branch">{session.branch || session.placeLabel}</span>}
-      </button>)}
+        <strong>{session.title}{summonNamed(session) && session.titleOutdated && <span className="ks-session-updating" title={OUTDATED_TIP}> · {OUTDATED_WORD}</span>}</strong>{detail && <span className="ks-session-name-detail">{detail}</span>}{original && <span className="ks-session-original" title={APP_TITLE_TIP}>“{original}”</span>}{goal && <span className="ks-session-goal" title={goal.tip}><Flag size={10} aria-hidden="true" /><span>{goal.text}</span></span>}<span className="ks-session-state">{session.confidence === 'inferred' ? 'Probably · ' : ''}{activityLabel[session.activity]}</span><span className="ks-session-detail">{session.stateText}</span>{(session.branch || session.placeLabel) && <span className="ks-session-branch">{session.branch || session.placeLabel}</span>}
+      </button>; })}
     </div>
-    {selectedSession && <div className="ks-selected-detail"><div><span className="vw-inspector-kicker">{selectedSession.confidence === 'reported' ? 'Reported session state' : 'Inferred from local activity'}</span><strong>{selectedSession.title}</strong><p>{selectedSession.reason || selectedSession.stateText}</p><dl className="ks-selected-location"><div><dt>Project</dt><dd>{selectedSession.project?.trim() || 'Unassigned'}</dd></div>{selectedSession.folder?.trim() && <div><dt>Folder</dt><dd>{selectedSession.folder}</dd></div>}</dl></div><button type="button" className="vw-button" onClick={() => onTrace(selectedSession)}><Route size={14} />Inspect session & trace</button></div>}
+    {selectedSession && <div className="ks-selected-detail"><div><span className="vw-inspector-kicker">{selectedSession.confidence === 'reported' ? 'Reported session state' : 'Inferred from local activity'}</span><strong>{selectedSession.title}</strong>{selectedDetail && <span className="ks-session-name-detail">{selectedDetail}</span>}<p>{selectedSession.reason || selectedSession.stateText}</p><dl className="ks-selected-location"><div><dt>Project</dt><dd>{selectedSession.project?.trim() || 'Unassigned'}</dd></div>{selectedSession.folder?.trim() && <div><dt>Folder</dt><dd>{selectedSession.folder}</dd></div>}{selectedGoal && <div><dt>Serves</dt><dd>{selectedGoal.title} · {selectedGoal.status}</dd></div>}{selectedOriginal && <div><dt>App title</dt><dd>“{selectedOriginal}”</dd></div>}</dl></div><button type="button" className="vw-button" onClick={() => onTrace(selectedSession)}><Route size={14} />Inspect session & trace</button></div>}
     <p className="ks-caption">One chef per session. Movement illustrates activity; it does not measure progress or mark goals complete. <span>Chef models and animation adapted from Agenttrail.</span></p>
   </div>;
 }

@@ -4,7 +4,8 @@ export const CONTEXT_MESSAGES = 6;
 export const CONTEXT_CHARS = 1000;
 export const CONTEXT_LINE_BYTES = 64 * 1024;
 const TEXT_TYPES = new Set(['text', 'input_text', 'output_text']);
-const WRAPPER = /<(environment_context|system-reminder|system_reminder|instructions|permissions instructions|app-context|skills_instructions|user_instructions|developer_instructions|recommended_plugins|collaboration_mode|subagent_notification)\b[^>]*>[\s\S]*?<\/\1>/gi;
+// Harness turns (scheduled heartbeats, background-task notices) arrive as user rows but are not the person's direction.
+const WRAPPER = /<(environment_context|system-reminder|system_reminder|instructions|permissions instructions|app-context|skills_instructions|user_instructions|developer_instructions|recommended_plugins|collaboration_mode|subagent_notification|heartbeat|task-notification)\b[^>]*>[\s\S]*?<\/\1>/gi;
 const INJECTED = /^(?:#\s*(?:AGENTS\.md|CLAUDE\.md)\s+instructions\b|\[Request interrupted by user|This session is being continued from a previous conversation|You are an AI assistant|<turn_aborted>|<local-command-|<command-name>)/i;
 const cut = (text, max) => { const out = text.slice(0, max); return /[\ud800-\udbff]$/.test(out) ? out.slice(0, -1) : out; };
 

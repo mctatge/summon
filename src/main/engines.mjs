@@ -2,6 +2,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {executable,run,scrubbedEnv} from './process.mjs';
+import {unreadableAnswer} from '../core/answer-retry.mjs';
 
 const EFFORTS=['low','medium','high'];
 const CLAUDE_ALIASES=['opus','sonnet','haiku'];
@@ -37,6 +38,8 @@ export function claudeFailure(error){
   if(typeof error?.stdout!=='string')return error;
   try{
     const result=JSON.parse(error.stdout);
+    // Tool-less structured runs stop here when the answer failed its format check; asking once more can succeed.
+    if(result?.subtype==='error_max_turns')return unreadableAnswer('Claude returned an answer Summon could not read. Try again.');
     if(result.is_error&&typeof result.result==='string')return new Error(claudeErrorMessage(result.result));
   }catch{}
   return error;

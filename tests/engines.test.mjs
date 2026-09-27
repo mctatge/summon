@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {restrictedCodexArgs,claudeFailure} from '../src/main/engines.mjs';
 import {run} from '../src/main/process.mjs';
+import {worthRetrying} from '../src/core/answer-retry.mjs';
 test('Codex answers disable action surfaces and user configuration while preserving sandbox',()=>{
   const args=restrictedCodexArgs();assert.ok(args.includes('--ignore-user-config'));assert.ok(args.includes('--ephemeral'));assert.equal(args[args.indexOf('--sandbox')+1],'read-only');
   const disabled=args.flatMap((x,i)=>x==='--disable'?[args[i+1]]:[]);
@@ -24,4 +25,14 @@ test('Claude failures preserve non-auth errors and do not mask process timeouts'
   assert.equal(claudeFailure(quota).message,'Usage limit reached.');
   const malformed=Object.assign(new Error('Invalid response'),{stdout:'not json'});
   assert.equal(claudeFailure(malformed),malformed);
+});
+test('A Claude structured answer stopped at its turn limit is an unreadable answer worth one more request',async()=>{
+  const response={type:'result',subtype:'error_max_turns',is_error:true,num_turns:2};
+  const program=`process.stdout.write(${JSON.stringify(JSON.stringify(response))});process.exitCode=1;`;
+  let failure;
+  try{await run(process.execPath,['-e',program]);}catch(error){failure=error;}
+  const mapped=claudeFailure(failure);
+  assert.ok(worthRetrying(mapped));
+  assert.match(mapped.message,/could not read/);
+  assert.doesNotMatch(mapped.message,/login|exited/i);
 });

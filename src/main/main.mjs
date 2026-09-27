@@ -17,6 +17,7 @@ import {createWorkRecovery} from '../core/work-recovery.mjs';
 import {createWorkRecoverySources} from '../core/sessions/work-recovery-sources.mjs';
 import {createCompletionReconciler} from '../core/goal-completion.mjs';
 import {createContextReasoning} from '../core/context-reasoning.mjs';
+import {createSessionNames} from '../core/session-names.mjs';
 import {runContextReasoning} from './context-engine.mjs';
 import {createBrowserTeaching} from './browser-teaching.mjs';
 import {createBrowserTeachingBridge} from './browser-teaching-bridge.mjs';
@@ -54,6 +55,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
   let visualWorkspace;
   let workRecovery,recoverySources,recoveryTimer,recoveryAsleep=false;
   let contextReasoning,reasoningTimer,reasoningAsleep=false;
+  // Summon's own durable session names, anchored to the saved goal a session serves; see docs/decisions.md 2026-09-26.
+  let sessionNames;
   let teaching;
   const recentInputs=[];
   const noteInput=text=>{if(typeof text==='string'&&text.trim()&&!service.snapshot().settings.paused&&contextReasoning?.read().settings.enabled){recentInputs.push({text:text.slice(0,2000),projectId:service.snapshot().currentProjectId,at:Date.now()});while(recentInputs.length>6)recentInputs.shift();}};
@@ -196,7 +199,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     // The window keeps its timers running while hidden (backgroundThrottling is off), so polls from a hidden window get the last check.
     const sessionsShown=()=>Boolean(window&&!window.isDestroyed()&&window.isVisible()&&!window.isMinimized());
     try{visualWorkspace=await createVisualWorkspace({dataDir,run,git:await executable('git').catch(()=>'/usr/bin/git'),env:scrubbedEnv(GIT_ENV),
-      getWorkInFlight:()=>flight().read({maxAgeMs:20000}),getAgentSessions:async()=>{const view=await sessions().read({maxAgeMs:sessionsShown()?3000:Infinity,includeContext:contextReasoning?.read().settings.enabled===true});return contextReasoning?.decorateSessions(view)??view;},getReasoning:()=>contextReasoning?.read()??null,
+      getWorkInFlight:()=>flight().read({maxAgeMs:20000}),getAgentSessions:async()=>{const view=await sessions().read({maxAgeMs:sessionsShown()?3000:Infinity});return sessionNames?.decorate(view)??view;},getReasoning:()=>contextReasoning?.read()??null,
       traceSession:key=>sessions().trace(key),getPrivatePaths:repoPath=>workInFlight?.settings?.().privatePaths?.[repoPath]||[]});
     }catch(error){service.setHealth({errors:[`Visual workspace: ${error.message}`]});}
     const visuals=()=>{if(!visualWorkspace)throw new Error('Visual workspace is not available right now.');return visualWorkspace;};
@@ -246,6 +249,10 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     }
     powerMonitor.on('suspend',()=>{recoveryAsleep=true;clearTimeout(recoveryTimer);recoveryTimer=undefined;});
     powerMonitor.on('resume',()=>{recoveryAsleep=false;scheduleRecovery(5000);});
+    // Goal reasoning and session names share one model path, one call at a time, so the local model never turns the second away as busy.
+    let reasoningQueue=Promise.resolve();
+    const reason=(engine,request)=>{const next=reasoningQueue.then(()=>runContextReasoning(engine,request,{localModel,executable,run,scrubbedEnv}));reasoningQueue=next.catch(()=>{});return next;};
+    const autoEngine=async()=>{const local=await localModel.health();return local.available?'local':chooseEngine({usage:usage?.status(),settings:usage?.settings?.()}).engine;};
     const reasoningScope=()=>JSON.stringify([service.snapshot().projects,service.snapshot().settings.paused,service.snapshot().settings.activityEnabled,service.snapshot().settings.accessibilityEnabled,service.snapshot().settings.excludedApps,workInFlight?.settings?.(),agentSessions?.settings?.()]);
     try{contextReasoning=await createContextReasoning({dataDir,getScope:reasoningScope,getSelectedRepoId:()=>service.snapshot().currentProjectId??null,
       getInput:async({repoId=null}={})=>{
@@ -262,26 +269,45 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
         }
         return {flight:flightView,sessions:sessionView,snapshot:state,projectNotes,explicitGoals:repos.flatMap(repo=>visualWorkspace?.explicitGoals(repo.id)??[]),utterances:recentInputs,privatePaths:workInFlight?.settings?.().privatePaths??{}};
       },
-      infer:(engine,request)=>runContextReasoning(engine,request,{localModel,executable,run,scrubbedEnv}),
-      selectEngine:async()=>{const local=await localModel.health();return local.available?'local':chooseEngine({usage:usage?.status(),settings:usage?.settings?.()}).engine;}});
+      infer:reason,selectEngine:autoEngine});
     }catch(error){service.setHealth({errors:[`Context reasoning: ${error.message}`]});}
+    // Every project's sessions, independent of the selected workspace; the same enabled setting, engine choice and pause as goal reasoning.
+    const namesHealth=new Set();
+    const reportNames=()=>{
+      const view=sessionNames?.read(),errors=[view?.problem,view?.error].filter(Boolean).map(message=>`Session names: ${message}`);
+      const gone=[...namesHealth].filter(message=>!errors.includes(message)),fresh=errors.filter(message=>!namesHealth.has(message));
+      if(gone.length){for(const message of gone)namesHealth.delete(message);service.setHealth({resolved:gone});}
+      if(fresh.length){for(const message of fresh)namesHealth.add(message);service.setHealth({errors:fresh});}
+    };
+    try{sessionNames=await createSessionNames({dataDir,
+      getSessions:()=>sessions().read({maxAgeMs:3000,includeContext:true,includeRecent:true}),
+      getVocabulary:async()=>{const view=await flight().read({maxAgeMs:60000});return {privatePaths:workInFlight?.settings?.().privatePaths??{},repos:(view.repos??[]).filter(repo=>!sealedPath(repo.path)).map(repo=>({id:repo.id,name:repo.name??path.basename(repo.path),path:repo.path,workstreams:(repo.places??[]).filter(place=>place.grouping&&place.grouping.engine!=='paths').flatMap(place=>place.grouping.workstreams??[])
+        // Only titles a grouping chose; folder fallbacks and the not-yet-grouped bucket are not the owner's words.
+        .filter(stream=>stream&&!stream.private&&!String(stream.id).startsWith('ws-new-')).map(stream=>stream.title).filter(title=>typeof title==='string'&&title).slice(0,6)}))};},
+      getScope:()=>JSON.stringify(workInFlight?.settings?.().privatePaths??{}),
+      getGoals:repoIds=>repoIds.flatMap(id=>{try{return visualWorkspace?.explicitGoals(id)??[];}catch{return [];}}),
+      infer:reason,selectEngine:async()=>{const chosen=contextReasoning?.read().settings.engine;return chosen&&chosen!=='auto'?chosen:autoEngine();},
+      isEnabled:()=>contextReasoning?.read().settings.enabled===true,isPaused:()=>quitting||reasoningAsleep||service.snapshot().settings.paused,onChange:reportNames});
+      reportNames();
+    }catch(error){service.setHealth({errors:[`Session names: ${error.message}`]});}
     const reasoning=()=>{if(!contextReasoning)throw new Error('Context reasoning is not available right now.');return contextReasoning;};
     handle('context-reasoning',options=>{
       const value=options??{};
       if(typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!['refresh','repoId','release'].includes(key))||(value.refresh!==undefined&&typeof value.refresh!=='boolean')||(value.release!==undefined&&typeof value.release!=='boolean')||(value.repoId!==undefined&&value.repoId!==null&&(typeof value.repoId!=='string'||!value.repoId||value.repoId.length>200)))throw new Error('Invalid request');
       if(value.release===true)return reasoning().releaseFocus();
+      if(value.refresh===true)void sessionNames?.refresh({force:true});
       return reasoning().request({force:value.refresh===true,...(value.repoId!==undefined?{repoId:value.repoId}:{})});
     });
-    handle('context-reasoning-settings',async patch=>{const view=await reasoning().updateSettings(patch);if(!view.settings.enabled)recentInputs.length=0;else reasoning().poll();return view;});
-    function scheduleReasoning(delay=60000){clearTimeout(reasoningTimer);if(quitting||reasoningAsleep||!contextReasoning)return;reasoningTimer=setTimeout(()=>{reasoningTimer=undefined;if(!service.snapshot().settings.paused)contextReasoning.poll();scheduleReasoning();},delay);reasoningTimer.unref?.();}
+    handle('context-reasoning-settings',async patch=>{const view=await reasoning().updateSettings(patch);if(!view.settings.enabled)recentInputs.length=0;else{reasoning().poll();sessionNames?.poll();}return view;});
+    function scheduleReasoning(delay=60000){clearTimeout(reasoningTimer);if(quitting||reasoningAsleep||!contextReasoning)return;reasoningTimer=setTimeout(()=>{reasoningTimer=undefined;if(!service.snapshot().settings.paused){contextReasoning.poll();sessionNames?.poll();}scheduleReasoning();},delay);reasoningTimer.unref?.();}
     powerMonitor.on('suspend',()=>{reasoningAsleep=true;clearTimeout(reasoningTimer);reasoningTimer=undefined;});
     powerMonitor.on('resume',()=>{reasoningAsleep=false;scheduleReasoning(5000);});
-    handle('agent-sessions',async options=>{const refresh=flightOptions(options,{refresh:'boolean'}).refresh===true;const view=await sessions().read({maxAgeMs:refresh?0:sessionsShown()?3000:Infinity,includeContext:contextReasoning?.read().settings.enabled===true});
+    handle('agent-sessions',async options=>{const refresh=flightOptions(options,{refresh:'boolean'}).refresh===true;const view=await sessions().read({maxAgeMs:refresh?0:sessionsShown()?3000:Infinity});
       // This read has just re-read the settings file, so a count turned back on by hand starts counting again here.
       // Nothing else would: once it is off there is no timer left to notice the edit.
       if(!statusTimer&&trayCount()!=='off')scheduleStatus(TRAY_FIRST);
-      if(sessionsShown()&&!service.snapshot().settings.paused)contextReasoning?.poll();
-      return contextReasoning?.decorateSessions(view)??view;});
+      if(sessionsShown()&&!service.snapshot().settings.paused){contextReasoning?.poll();sessionNames?.poll();}
+      return sessionNames?.decorate(view)??view;});
     // Hook metadata belongs to a known session even when it has no repository. Core resolves the identity from
     // its last session read; this window-only bridge never reads a transcript or initiates a repository scan.
     handle('agent-session-trace',key=>{if(typeof key!=='string'||!key||key.length>300)throw new Error('Invalid session');return sessions().trace(key);});
@@ -336,7 +362,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
       const needsYou=view?.summary?.needsYou??0;
       const working=(view?.summary?.working??0)+(mode==='working'?view?.summary?.backgroundWorking??0:0);
       if(!needsYou&&!working){clearStatus();return false;}
-      statusRows=(view.groups?.find(group=>group.id==='needs-you')?.sessions??[]).slice(0,TRAY_ROWS).map(session=>({key:session.key,label:statusLabel(session)}));
+      // The count stays on the apps' metadata; the rows use the same names as the board.
+      statusRows=((sessionNames?.decorate(view)??view).groups?.find(group=>group.id==='needs-you')?.sessions??[]).slice(0,TRAY_ROWS).map(session=>({key:session.key,label:statusLabel(session)}));
       // Plain text rather than a second icon: it takes the menu bar's own colour on either theme, and a digit beside a
       // half-filled circle can never be mistaken for Summon's own star icon.
       if(!statusTray){statusTray=new Tray(nativeImage.createEmpty());statusTray.on('click',openSessionsPanel);statusTray.on('right-click',()=>statusTray.popUpContextMenu(statusMenu()));}
@@ -464,6 +491,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     if(agentSessions)pendingRequests.add(Promise.resolve().then(()=>agentSessions.close()));
     if(visualWorkspace)pendingRequests.add(Promise.resolve().then(()=>visualWorkspace.close()));
     if(contextReasoning)pendingRequests.add(Promise.resolve().then(()=>contextReasoning.close()));
+    if(sessionNames)pendingRequests.add(Promise.resolve().then(()=>sessionNames.close()));
     if(teaching)pendingRequests.add(Promise.resolve().then(()=>teaching.close()));
     if(usage)pendingRequests.add(Promise.resolve().then(()=>usage.close()));
     if(taskRouter)pendingRequests.add(Promise.resolve().then(()=>taskRouter.close()));

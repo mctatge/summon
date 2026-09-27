@@ -139,8 +139,15 @@ export type AgentSessionGroupId = 'needs-you' | 'new' | 'working' | 'open' | 'in
 // session works in, that folder's ('folder'). area is a folder inside the project; workstream is Work in flight's wording.
 export type AgentSessionWork = { added: number | null; removed: number | null; files: number | null; area: string | null;
   scope: 'session' | 'folder'; workstream: string | null; workstreamState: string | null };
+// Summon's own session names (decisions 2026-09-26): title is what every view shows. A 'summon' title is a plain name for
+// the kind of work ('New project creation'), readable at a glance; titleDetail is its short specifics line, absent when
+// the model had none. When titleSource is 'summon' or 'goal', originalTitle is the app's own title, kept for tooltips and
+// the inspectors; titleOutdated means the conversation moved on since the name was written. servesGoal is the open saved
+// goal the session serves. All absent from older cores.
+export type SessionTitleSource = 'summon' | 'goal' | 'native';
+export type AgentSessionGoal = { id: string; title: string; status: VisualGoalStatus };
 export type AgentSession = { key: string; app: AgentApp; surface: 'desktop' | 'terminal' | 'ide' | 'cli' | 'background'; appLabel: string; title: string; titleIsFallback: boolean;
-  originalTitle?: string; titleReasoning?: ContextInference;
+  titleSource?: SessionTitleSource; titleDetail?: string; originalTitle?: string; titleOutdated?: boolean; servesGoal?: AgentSessionGoal | null;
   project: string | null; placeId: string | null; repoId: string | null; placeLabel: string | null; folder: string | null; branch: string | null;
   group: AgentSessionGroupId; activity: 'working' | 'needs-you' | 'failed' | 'open' | 'quiet' | 'interrupted' | 'unknown'; reason: string | null;
   stateText: string; sinceText?: string | null; sinceAt: string | null; updatedAt: string | null; unread: boolean; pinned: boolean; live: boolean;
@@ -198,7 +205,7 @@ export type WorkRecoverySnapshot = { repoId: string; enabled: boolean; enabledAt
 export type VisualGoalLinks = { placeId: string | null; branch: string | null; sessionKey: string | null; component: string | null; agentId?: string | null };
 export type ContextInference = { summary: string; evidence: string[]; confidence: 'high' | 'medium' | 'low'; engine: string; model: string | null; updatedAt: string };
 export type ContextReasoningSettings = { enabled: boolean; engine: 'auto' | 'local' | 'claude' | 'codex' };
-export type ContextReasoningView = { repoId?: string | null; settings: ContextReasoningSettings; status: 'idle' | 'running' | 'ready' | 'error' | 'disabled'; updatedAt: string | null; engine: string | null; model: string | null; error: string | null; summary: string; goals: VisualGoal[]; sessionTitles: Array<{ sessionKey: string; title: string; summary: string; evidence: string[]; confidence: ContextInference['confidence'] }>; stale: boolean };
+export type ContextReasoningView = { repoId?: string | null; settings: ContextReasoningSettings; status: 'idle' | 'running' | 'ready' | 'error' | 'disabled'; updatedAt: string | null; engine: string | null; model: string | null; error: string | null; summary: string; goals: VisualGoal[]; stale: boolean };
 export type WorkRecordFields = {
   acceptanceCriteria: string; nextStep: string; checklist: Array<{ id: string; text: string; done: boolean }>;
   findings: Array<{ id: string; text: string; evidence: string; revisitWhen: string }>; evidence: Array<{ id: string; summary: string; reference: string }>;

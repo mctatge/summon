@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { ArrowUpRight, Bot, CircleAlert, GitBranch, LoaderCircle } from 'lucide-react';
+import { ArrowUpRight, Bot, CircleAlert, Flag, GitBranch, LoaderCircle } from 'lucide-react';
 import { previewAgentSessions, previewWorkInFlight } from './preview';
+import { appTitle, goalWords, nameDetail, OUTDATED_WORD, rowAppTitle, summonNamed } from './session-names';
 import type { AgentSession, AgentSessionGroupId, AgentSessionsView, SummonBridge, UsageReport, UsageView, WifRepo, WorkInFlight } from './types';
 
 type OverviewProps = { bridge: SummonBridge | undefined; preview: boolean; onOpen: () => void };
@@ -122,9 +123,11 @@ export function SessionsOverviewCard({ bridge, preview, onOpen, onView }: Overvi
       {view.warnings[0] && <p className="workspace-card-note" data-tone="warning">{view.warnings[0]}</p>}
       {sessions.length ? <div className="workspace-summary-list">{sessions.slice(0, 3).map(session => {
         const direct = !preview && session.openable === 'link' && typeof bridge?.openAgentSession === 'function';
-        return <button type="button" className="workspace-summary-row" key={session.key} onClick={() => void openSession(session)} disabled={Boolean(opening)} aria-label={`${direct ? session.openHint : 'View session options'}: ${session.title}`}>
+        // A Summon name's specifics lead the small line; its app title steps back to the tooltip.
+        const detail = nameDetail(session), original = rowAppTitle(session), app = appTitle(session), goal = goalWords(session);
+        return <button type="button" className="workspace-summary-row" key={session.key} onClick={() => void openSession(session)} disabled={Boolean(opening)} title={app ? `App title: “${app}”` : undefined} aria-label={`${direct ? session.openHint : 'View session options'}: ${session.title}${detail ? `, ${detail}` : ''}`}>
           <span className="workspace-row-icon">{opening === session.key ? <LoaderCircle size={17} className="spinner" aria-hidden="true" /> : <Bot size={17} aria-hidden="true" />}</span>
-          <span className="workspace-row-copy"><strong>{session.title}</strong><small>{[session.appLabel, session.project].filter(Boolean).join(' · ')}</small><span className="workspace-row-status" data-state={session.group}>{session.stateText}{session.helpers ? ` · ${plural(session.helpers, 'helper')}` : ''}</span></span>
+          <span className="workspace-row-copy"><strong>{session.title}{summonNamed(session) && session.titleOutdated && <em className="workspace-row-updating"> · {OUTDATED_WORD}</em>}</strong><small>{[detail, original && `“${original}”`, session.appLabel, session.project].filter(Boolean).join(' · ')}</small>{goal && <small className="workspace-row-goal" title={goal.tip}><Flag size={11} aria-hidden="true" />{goal.text}</small>}<span className="workspace-row-status" data-state={session.group}>{session.stateText}{session.helpers ? ` · ${plural(session.helpers, 'helper')}` : ''}</span></span>
           <ArrowUpRight size={14} className="workspace-row-arrow" aria-hidden="true" />
         </button>;
       })}</div> : <p className="workspace-card-empty">{view.sources.some(source => source.available) ? 'No sessions need attention right now.' : 'No agent sources are available yet.'}</p>}

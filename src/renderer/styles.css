@@ -772,8 +772,8 @@ kbd { font: inherit; }
 .as-where.with-work .as-project { max-width: 42%; }
 .as-where.with-work .as-branch { flex: 0 0 auto; }
 .as-row.recent .as-work, .as-row.recent .as-work > svg { color: var(--ink-disabled); }
-/* The name in front is Summon's own words. The session's own title keeps its place underneath, in quotes, so
-   nothing has been renamed behind his back. On the rows where the address would only repeat the project this
+/* Under an address or a goal's name, the session's own title keeps its place underneath, in quotes, so nothing has
+   been renamed behind his back (under Summon's own name it waits in the tooltip). On the rows where the address would only repeat the project this
    quoted title is back in the lead and this line is genuinely secondary, but it is still the string that tells
    two rows apart, so it stays above the contrast floor rather than sitting in the almost-gone ink.
    A title he named himself carries a little more weight; every other title is one no reader says who wrote. */
@@ -786,6 +786,21 @@ kbd { font: inherit; }
 .as-where.with-work .as-title-quote { max-width: 54%; }
 .as-where:has(.as-title-quote) .as-work { flex-shrink: 4; }
 .as-place { flex: 0 0 auto; max-width: 44%; color: var(--pencil-text); }
+/* The saved goal a named session serves: the owner's own words, so it reads a step above the app title beside it. */
+.as-goal { flex: 0 0 auto; max-width: 46%; color: var(--ink-secondary); font-weight: 500; }
+.as-goal > svg { color: var(--petrol); opacity: .8; }
+/* Under a goal's name the quoted app title follows the chips; the work line gives way before it, and with a goal
+   and a branch also on the line the work line steps aside entirely, as it does for crowded rows above. */
+.as-where .as-chip ~ .as-title-quote { flex: 0 0 auto; max-width: 40%; }
+.as-where:has(.as-chip ~ .as-title-quote) .as-work { flex-shrink: 20; }
+.as-where.with-work:has(.as-chip ~ .as-title-quote):has(.as-goal):has(.as-branch) .as-work { display: none; }
+/* A Summon name's specifics lead the line under it: the words that tell two rows of the same kind of work apart. They
+   hold their width up to the cap, the counts give way first, and with a goal and a branch too the counts step aside. */
+.as-name-detail { flex: 0 0 auto; max-width: 50%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink-secondary); }
+.as-where:has(.as-name-detail) .as-work { flex-shrink: 20; }
+.as-where.with-work:has(.as-name-detail):has(.as-goal):has(.as-branch) .as-work { display: none; }
+/* The conversation moved on since the name was written: said once, quietly, beside the name. */
+.as-updating { flex-shrink: 0; color: var(--pencil-text); font-size: 10px; font-style: italic; line-height: 20px; white-space: nowrap; }
 /* The line takes the quoted title first, then the folder it is in and the branch. Carrying all three, it drops
    the counts rather than squeezing them to a stub; the row's tooltip still has every one. Without a quoted title
    there is room, so the counts stay: nothing crowded them out. */
@@ -834,8 +849,9 @@ kbd { font: inherit; }
 .as-source.problem .as-source-dot { background: var(--warning); border-color: var(--warning); }
 .as-source.absent .as-source-dot { border-style: dashed; }
 .as-source.problem .as-source-text { color: var(--warning); }
-.as-privacy { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; white-space: nowrap; }
-.as-privacy > svg { color: var(--petrol); }
+/* Two sentences now (where the list is read, and who writes the names), so it wraps as a short block, shield at its first line. */
+.as-privacy { display: inline-flex; align-items: flex-start; gap: 5px; max-width: 62ch; margin-left: auto; text-wrap: pretty; }
+.as-privacy > svg { flex: 0 0 auto; margin-top: 4px; color: var(--petrol); }
 .as-warnings { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; color: var(--warning); }
 .as-warnings li { display: flex; align-items: flex-start; gap: 5px; overflow-wrap: anywhere; }
 .as-warnings svg { margin-top: 3px; }

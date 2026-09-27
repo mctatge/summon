@@ -21,7 +21,8 @@ async function load(file, modules) {
 const preview = (await load('preview.ts', {})).exports;
 const flight = await load('WorkInFlightPanel.tsx', { './preview': preview });
 const { WorkInFlightPanel } = flight.exports;
-const sessions = await load('SessionsPanel.tsx', { './preview': preview });
+const names = (await load('session-names.ts', { './work-records': (await load('work-records.ts', {})).exports })).exports;
+const sessions = await load('SessionsPanel.tsx', { './preview': preview, './session-names': names });
 const { SessionsPanel } = sessions.exports;
 const view = preview.previewWorkInFlight;
 const original = structuredClone(view.standing);
@@ -169,8 +170,13 @@ test('a session row leads with where it is and keeps the app’s own title under
   // An address that would only repeat the project is no address, so that row keeps its own title in front.
   assert.match(html, /class="as-open "[^>]*>Pocket Meter release notes/);
   assert.ok(!text.includes('Pocket Meter · main folder'), 'the address that tells two rows apart no better than nothing is not printed');
-  assert.equal(html.match(/as-chip as-project/g)?.length, 1, 'and it is the only row that needs the project chip back');
-  assert.match(html, /class="as-chip as-place"[\s\S]*?Claude worktree<\/span>/, 'the folder kind the name in front left out is still shown');
+  // The three rows led by Summon's own name carry the project as a chip; of the address rows only this one does.
+  assert.equal(html.match(/as-chip as-project/g)?.length, 4, 'and it is the only address row that needs the project chip back');
+  // The sample's worktree row has a Summon name now, so the address it would otherwise lead with is rebuilt here.
+  const address = { ...groups[0].sessions[0], title: 'Onboarding checklist copy', titleSource: undefined, titleDetail: undefined, originalTitle: undefined, headline: 'Harbor · calm-lighthouse-8611fb' };
+  withGroups([{ ...groups[0], sessions: [address] }], () => {
+    assert.match(board(), /class="as-chip as-place"[\s\S]*?Claude worktree<\/span>/, 'the folder kind the name in front left out is still shown');
+  });
   // A worktree the name in front left out does get its chip, since that is where the files are.
   const named = { ...groups[1].sessions[0], headline: 'Draft Board · Codex worktree', placeLabel: 'Codex worktree · 0ced' };
   withGroups([{ id: 'new', title: 'New replies', sessions: [named] }], () => {

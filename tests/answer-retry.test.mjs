@@ -4,6 +4,7 @@ import {mkdtemp,rm} from 'node:fs/promises';
 import {askAtMostTwice,unreadableAnswer,worthRetrying,UNREADABLE_ANSWER} from '../src/core/answer-retry.mjs';
 import {validateGrouping} from '../src/core/workstreams.mjs';
 import {checkContextShape} from '../src/core/context-reasoning.mjs';
+import {checkNamesShape} from '../src/core/session-names.mjs';
 import {runGrouping} from '../src/main/workstream-engine.mjs';
 import {scrubbedEnv} from '../src/main/process.mjs';
 
@@ -63,10 +64,11 @@ test('grouping tags unreadable model answers, but not CLI failures or unreadable
   }
 });
 
-test('the grouping and context checks tag the answers they refuse',()=>{
+test('the grouping, context and naming checks tag the answers they refuse',()=>{
   const request={items:new Map([['F001',{path:'a.ts'}]]),branchIds:new Map(),privatePaths:[]};
   for(const raw of ['not json',[],null])assert.throws(()=>validateGrouping(raw,request,{files:[]}),error=>error.code===UNREADABLE_ANSWER);
   assert.throws(()=>validateGrouping({workstreams:[{title:'x',items:['F999']}]},request,{files:[]}),error=>error.code===UNREADABLE_ANSWER&&/did not place any/.test(error.message));
-  for(const raw of [null,[],{summary:1,goals:[],sessionTitles:[]},{summary:'',goals:{},sessionTitles:[]},{summary:'',goals:Array(7).fill({}),sessionTitles:[]},{summary:'',goals:[]},{summary:'',goals:[],sessionTitles:{}},{summary:'',goals:[],sessionTitles:Array(9).fill({})}])assert.throws(()=>checkContextShape(raw),error=>error.code===UNREADABLE_ANSWER);
-  assert.doesNotThrow(()=>checkContextShape({summary:'',goals:[],sessionTitles:[]}));
+  for(const raw of [null,[],{summary:1,goals:[]},{summary:'',goals:{}},{summary:'',goals:Array(7).fill({})},{goals:[]},{summary:''}])assert.throws(()=>checkContextShape(raw),error=>error.code===UNREADABLE_ANSWER);
+  assert.doesNotThrow(()=>checkContextShape({summary:'',goals:[]}));
+  for(const raw of ['not json',null,{names:{}},{names:Array(9).fill({})}])assert.throws(()=>checkNamesShape(raw),error=>error.code===UNREADABLE_ANSWER);
 });

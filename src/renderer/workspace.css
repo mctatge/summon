@@ -98,6 +98,10 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .workspace-row-copy { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
 .workspace-row-copy > strong { display: block; font-size: 13px; line-height: 1.45; font-weight: 600; letter-spacing: -.1px; overflow-wrap: anywhere; }
 .workspace-row-copy > small { display: block; color: var(--ink-secondary); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+/* A named session: the saved goal it serves, and a quiet word when the conversation has moved past its name. */
+.workspace-row-copy > small.workspace-row-goal { display: flex; align-items: center; gap: 5px; }
+.workspace-row-goal > svg { flex-shrink: 0; color: var(--petrol); }
+.workspace-row-updating { font-weight: 400; color: var(--ink-secondary); }
 .workspace-row-status { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; color: var(--ink-secondary); font-size: 11px; line-height: 1.5; margin-top: 3px; }
 .workspace-row-status[data-state='needs'], .workspace-row-status[data-state='needs-you'], .workspace-row-status[data-state='attention'] { color: var(--warning); }
 .workspace-row-status[data-state='working'], .workspace-row-status[data-state='ready'] { color: var(--success); }

@@ -19,7 +19,7 @@ const value = () => ({
     { projectId: null, kind: 'explicit', text: 'Unscoped private reminder', source: { label: 'Home' } },
   ],
 });
-const answer = (repoId, id = 'E1') => ({ summary: `${repoId} direction`, goals: [{ repoId, title: 'Send the professor update', summary: 'The project note records an unsent update.', status: 'planned', confidence: 'medium', evidence: [id] }], sessionTitles: [] });
+const answer = (repoId, id = 'E1') => ({ summary: `${repoId} direction`, goals: [{ repoId, title: 'Send the professor update', summary: 'The project note records an unsent update.', status: 'planned', confidence: 'medium', evidence: [id] }] });
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 test('selected workspace gets its older intent and dated notes despite busy other projects', () => {

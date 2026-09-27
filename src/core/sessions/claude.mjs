@@ -1,6 +1,7 @@
 /** Claude sessions: read-only metadata about Claude desktop app Code sessions and terminal `claude` sessions.
  * Sources: the live registry (~/.claude/sessions/<pid>.json), the app's claude-code-sessions/<acct>/<org>/local_*.json files,
- * the app's localStorage unread marks, git-worktrees.json, and the last 64 KB of terminal transcripts.
+ * the app's localStorage unread marks, git-worktrees.json, and the last 64 KB of terminal transcripts. When that tail holds
+ * no request from the person, a bounded read further back finds the latest one, remembered per file so only new lines are read.
  * Which files a session edited comes from the transcript's own file-history metadata lines, paths only, and from the
  * names of the entries in that session's ~/.claude/file-history folder, which are hashes of the paths.
  * Recent evidence keeps user/assistant text only, dropping tool output and thinking blocks.
@@ -22,6 +23,7 @@ const TERMINAL_LABEL = 'Claude in Terminal';
 const DEFAULT_LIMITS = {
   sessions: 300, registryFiles: 500, registryBytes: 64 * 1024, desktopFiles: 20000, prefixBytes: 1024, desktopBytes: 1024 * 1024, fullParses: 200,
   indexBytes: 1024 * 1024, worktreesBytes: 4 * 1024 * 1024, transcriptDirs: 1000, tailBytes: 64 * 1024, tailReads: 80, terminalRecentMs: DAY,
+  promptBytes: 4 * 1024 * 1024, promptChunkBytes: 256 * 1024, promptReads: 24,
   fullScanMs: 30000, helperWindowMs: 60000, helperEntries: 400, promptWaitMs: 30000, staleWorkingMs: 10 * 60000, concurrency: 8,
   editBytes: 96 * 1024, editReads: 80, editPaths: 200, editLineBytes: 512 * 1024,
   historyDirs: 120, historyEntries: 1000, historyHashes: 400, historyWindowMs: 6 * 3600000,
@@ -207,12 +209,12 @@ function newCache(homeDir) {
     unread: { sig: null, ids: new Set(), diffs: new Map() },
     worktrees: { sig: null, byLease: new Map() },
     desktop: { rootSig: null, accounts: new Map(), dirs: new Map() },
-    transcripts: { rootSig: null, slugs: new Map(), index: new Map(), tails: new Map(), edits: new Map(), lastFull: 0 },
+    transcripts: { rootSig: null, slugs: new Map(), index: new Map(), tails: new Map(), prompts: new Map(), edits: new Map(), lastFull: 0 },
     history: new Map(),
     helpers: new Map(),
   };
 }
-const emptyStats = () => ({ registryReads: 0, prefixReads: 0, fullParses: 0, tailReads: 0, editChecks: 0, editReads: 0, historyChecks: 0, historyLists: 0, transcriptStats: 0, helperStats: 0, unreadReads: 0, ms: 0, phases: {} });
+const emptyStats = () => ({ registryReads: 0, prefixReads: 0, fullParses: 0, tailReads: 0, promptReads: 0, editChecks: 0, editReads: 0, historyChecks: 0, historyLists: 0, transcriptStats: 0, helperStats: 0, unreadReads: 0, ms: 0, phases: {} });
 
 // ---- registry ----
 function waitingReason(value) {
@@ -531,7 +533,7 @@ async function scanTranscripts(cache, root, ctx, { needIds, windowMs }) {
   const { limits, nowMs, stats } = ctx;
   const state = cache.transcripts;
   const rootStat = await statOf(root);
-  if (!rootStat?.isDirectory()) { state.rootSig = null; state.slugs.clear(); state.index.clear(); state.tails.clear(); state.edits.clear(); return { exists: false }; }
+  if (!rootStat?.isDirectory()) { state.rootSig = null; state.slugs.clear(); state.index.clear(); state.tails.clear(); state.prompts.clear(); state.edits.clear(); return { exists: false }; }
   const rootSig = signature(rootStat);
   if (state.rootSig !== rootSig) {
     // Sealed folders are never listed, let alone read.
@@ -579,8 +581,55 @@ async function scanTranscripts(cache, root, ctx, { needIds, windowMs }) {
   });
   const files = new Set([...state.index.values()].map(entry => entry.file));
   for (const file of state.tails.keys()) if (!files.has(file)) state.tails.delete(file);
+  for (const file of state.prompts.keys()) if (!files.has(file)) state.prompts.delete(file);
   for (const file of state.edits.keys()) if (!files.has(file)) state.edits.delete(file);
   return { exists: true };
+}
+// The newest request from the person among complete lines, or null. Only user rows are parsed; tool results carry no text.
+function promptIn(text) {
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.charCodeAt(0) !== 123 || line.length > CONTEXT_LINE_BYTES || !line.includes('"user"')) continue;
+    let row;
+    try { row = JSON.parse(line); } catch { continue; }
+    if (!isObject(row) || row.type !== 'user' || row.isSidechain === true || row.isMeta === true || row.isCompactSummary) continue;
+    const found = recentContext([{ role: 'user', content: row.message?.content, at: isoTime(row.timestamp) }])?.messages[0];
+    if (found) return found;
+  }
+  return null;
+}
+// Long agent turns push the request out of the tail. The first look walks back within a budget; later looks read only
+// the lines written since, so an active session costs one small forward read.
+async function latestPrompt(file, prior, limits) {
+  const { handle, stat } = await openRead(file);
+  try {
+    const { dev, ino, size } = stat;
+    if (prior && prior.dev === dev && prior.ino === ino && size >= prior.consumed && size - prior.consumed <= limits.promptBytes) {
+      const buffer = await readRange(handle, prior.consumed, size - prior.consumed);
+      let from = 0;
+      if (!prior.aligned) { const first = buffer.indexOf(10); from = first < 0 ? buffer.length : first + 1; }
+      const to = buffer.lastIndexOf(10) + 1;
+      const found = from < to ? promptIn(buffer.subarray(from, to).toString('utf8')) : null;
+      return to > 0 && to >= from ? { dev, ino, consumed: prior.consumed + to, aligned: true, message: found ?? prior.message } : prior;
+    }
+    let limit = size, spent = 0, mark = null;
+    const chunk = Math.max(1024, limits.promptChunkBytes);
+    while (limit > 0 && spent < limits.promptBytes) {
+      const start = Math.max(0, limit - Math.min(chunk, limits.promptBytes - spent));
+      const buffer = await readRange(handle, start, limit - start);
+      spent += buffer.length;
+      let from = 0;
+      if (start > 0) { const first = buffer.indexOf(10); from = first < 0 ? buffer.length : first + 1; }
+      const to = buffer.lastIndexOf(10) + 1;
+      mark ??= to > 0 ? { consumed: start + to, aligned: true } : { consumed: start, aligned: start === 0 };
+      const found = from < to ? promptIn(buffer.subarray(from, to).toString('utf8')) : null;
+      if (found) return { dev, ino, ...mark, message: found };
+      if (start === 0) break;
+      limit = from < buffer.length ? start + from : start;
+    }
+    return { dev, ino, ...(mark ?? { consumed: 0, aligned: true }), message: null };
+  } finally { await handle.close(); }
 }
 async function tailsFor(cache, entries, ctx) {
   const { limits, stats } = ctx;
@@ -592,11 +641,23 @@ async function tailsFor(cache, entries, ctx) {
     else pending.push(entry);
   }
   const batch = pending.slice(0, limits.tailReads);
+  let promptReads = 0;
   await pool(batch, limits.concurrency, async entry => {
     try {
       stats.tailReads++;
       const { text, truncated } = await readTail(entry.file, limits.tailBytes);
       const info = parseTail(text, truncated);
+      const wanted = truncated && !info.recentContext?.messages.some(item => item.role === 'user');
+      // Over this read's budget: leave the tail uncached so the next read looks again.
+      if (wanted && promptReads >= limits.promptReads) { out.set(entry.id, info); return; }
+      if (wanted) {
+        promptReads++; stats.promptReads++;
+        try {
+          const prompt = await latestPrompt(entry.file, cache.transcripts.prompts.get(entry.file), limits);
+          cache.transcripts.prompts.set(entry.file, prompt);
+          if (prompt.message) info.recentContext = recentContext([prompt.message, ...(info.recentContext?.messages ?? [])]);
+        } catch { cache.transcripts.prompts.delete(entry.file); }
+      }
       cache.transcripts.tails.set(entry.file, { sig: entry.sig, info });
       out.set(entry.id, info);
     } catch { /* vanished or unreadable; retried on the next change */ }

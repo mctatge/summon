@@ -192,6 +192,8 @@ const maskAssignment = (match, lead, quote, quoted, bare) => (quoted !== undefin
   ? `${lead}${quote}[redacted]${quote}`
   : !INDIRECT.test(bare) && (ENV_NAME.test(lead) || /\d/.test(bare) || bare.length >= 16) ? `${lead}[redacted]` : match);
 const EMAIL = /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
+// The same address inside a link, where @ is written %40 (mail and sign-in links carry one).
+const ENCODED_EMAIL = /[A-Za-z0-9._%+-]+%40[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
 const US_PHONE = /(?<![\w+])(?:\+?1[\s.-]?)?(?:\(\d{3}\)\s?|\d{3}[\s.-])\d{3}[\s.-]\d{4}(?!\w)/g;
 const INTL_PHONE = /(?<![\w+])\+\d{1,3}(?:[\s.-]?\(?\d{1,4}\)?){2,5}(?![\w])/g;
 const TOKEN_RUN = /[A-Za-z0-9+/_-]{32,}={0,2}/g;
@@ -212,7 +214,7 @@ export function redact(text) {
   let value = typeof text === 'string' ? text : text == null ? '' : String(text);
   for (const pattern of KEY_PATTERNS) value = value.replace(pattern, '[redacted]');
   value = value.replace(ASSIGNMENT, maskAssignment).replace(CAMEL_ASSIGNMENT, maskAssignment);
-  value = value.replace(EMAIL, '[redacted]');
+  value = value.replace(EMAIL, '[redacted]').replace(ENCODED_EMAIL, '[redacted]');
   value = value.replace(US_PHONE, '[redacted]');
   value = value.replace(INTL_PHONE, match => { const digits = match.replace(/\D/g, '').length; return digits >= 8 && digits <= 15 ? '[redacted]' : match; });
   return value.replace(TOKEN_RUN, run => (tokenLike(run) ? '[redacted]' : run));

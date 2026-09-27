@@ -93,8 +93,9 @@ async function launch(){
   const missing=async()=>{throw new Error('Synthetic fixture has no optional files.');};
   const executable=async name=>`/synthetic/bin/${name}`,spawnLongLived=()=>assert.fail('No CLI is spawned in this lifecycle.');
   const ctx={handlers:new Map(),trays:[],power:new Map(),asks:[],choices:[],readerOptions:{},usageOptions:null,rpcOptions:null,core:null,window:null,health:[],recoveryScans:[],executable,spawnLongLived};
-  ctx.reasoning={stored:{enabled:false,engine:'auto'},calls:[],closed:0,read(){return {settings:{...this.stored}};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},decorateSessions(view){this.calls.push(['decorate',view]);return view;},async close(){this.closed++;}};
-  ctx.sessionReads=[];ctx.flightReads=[];ctx.inferences=[];ctx.projectReads=[];ctx.localAvailable=false;
+  ctx.reasoning={stored:{enabled:false,engine:'auto'},calls:[],closed:0,read(){return {settings:{...this.stored}};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},async close(){this.closed++;}};
+  ctx.names={calls:[],closed:0,error:null,problem:null,poll(){this.calls.push(['poll']);return this.read();},refresh(options){this.calls.push(['refresh',options]);return Promise.resolve(this.read());},decorate(view){this.calls.push(['decorate',view]);return view;},read(){return {status:'idle',error:this.error,problem:this.problem,names:{}};},async close(){this.closed++;}};
+  ctx.sessionReads=[];ctx.flightReads=[];ctx.extraRepos=[];ctx.inferences=[];ctx.projectReads=[];ctx.localAvailable=false;
   ctx.core={calls:[],stored:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},started:0,paused:0,resumed:0,stopped:0,closed:0,
     status(){return {version:1,settings:{...this.stored},providers:this.providers,refreshing:[],problem:null};},
     settings(){return {...this.stored};},
@@ -121,12 +122,13 @@ async function launch(){
     globalShortcut:{register:()=>true,unregisterAll:noop},session:{defaultSession:{setPermissionRequestHandler:noop,setPermissionCheckHandler:noop}},systemPreferences:{},safeStorage:{},clipboard:{},
     spawn:()=>assert.fail('Paused observation must remain paused.'),
     readFile:missing,writeFile:noop,mkdir:noop,stat:missing,access:missing,chmod:noop,lstat:missing,
-    createWorkInFlight:async()=>({read:async options=>{ctx.flightReads.push(options);return {repos:[{id:'demo',path:'/demo'}]};},group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
+    createWorkInFlight:async()=>({read:async options=>{ctx.flightReads.push(options);return {repos:[{id:'demo',path:'/demo',places:[{grouping:{workstreams:[{title:'Import pipeline: spreadsheet checks'},{title:null},{id:'ws-new-1a2b',title:'Newer changes, not grouped yet'},{title:'Private folder notes/',private:true}]}},{grouping:{engine:'paths',workstreams:[{title:'Top-level files'}]}}]},...ctx.extraRepos]};},group:()=>({}),settings:()=>({}),updateSettings:async()=>({}),places:()=>[],placePath:()=>'/tmp',close:async()=>{}}),runGrouping:async()=>({raw:{},model:null}),GIT_ENV:{},
     createAgentSessions:async()=>({read:async options=>{ctx.sessionReads.push(options);return {groups:[]};},openTarget:async()=>assert.fail('No session is opened.'),settings:()=>({}),updateSettings:async()=>({}),close:async()=>{}}),sessionSummaryText:()=>'',
-    createVisualWorkspace:async()=>({explicitGoals:id=>[{repoId:id,title:'Ship the current goal'}],read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
+    createVisualWorkspace:async()=>({explicitGoals:id=>{if(/\s/.test(id))throw new Error('Invalid repository id.');return [{repoId:id,title:'Ship the current goal'}];},read:async()=>assert.fail('No visual read expected.'),saveGoal:async()=>assert.fail('No goal save expected.'),close:async()=>{}}),
     createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
     createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
-    createContextReasoning:async options=>{ctx.reasoningOptions=options;return ctx.reasoning;},runContextReasoning:async(engine,request,deps)=>{ctx.inferences.push({engine,request,deps});return {raw:{goals:[],sessions:[]},model:'synthetic'};},
+    createContextReasoning:async options=>{ctx.reasoningOptions=options;return ctx.reasoning;},runContextReasoning:async(engine,request,deps)=>{ctx.inferences.push({engine,request,deps});await ctx.inferGate;return {raw:{goals:[],sessions:[]},model:'synthetic'};},
+    createSessionNames:async options=>{ctx.namesOptions=options;return ctx.names;},
     createDesktopVoice:()=>({publish:noop,updateVoice:noop,snapshot:()=>({state:'off',mode:'off',micActive:false}),toggle:noop,stop:async()=>{},close:async()=>{}}),
     createTranscriber:()=>({status:()=>({ready:false}),warm:async()=>{},transcribe:async()=>({text:''}),release:noop,close:async()=>{}}),
     homedir:()=>'/private/tmp/synthetic-home',path,fileURLToPath,
@@ -152,7 +154,7 @@ async function launch(){
     createUsage:async options=>{ctx.usageOptions=options;return ctx.core;},usageText,
     readClaudeUsage:async options=>{ctx.readerOptions.claude=options;return 'claude-read';},readCodexUsage:async options=>{ctx.readerOptions.codex=options;return 'codex-read';},
     chooseEngine:options=>{ctx.choices.push(options);return options.task?.engine&&options.task.engine!=='auto'?{engine:options.task.engine,reason:'pinned'}:{engine:'codex',reason:'synthetic choice'};},
-    loadSealedSegments:()=>[],sealedPath:()=>false,
+    loadSealedSegments:()=>[],sealedPath:value=>typeof value==='string'&&value.includes('sealed-client'),
     createWorkRecoverySources:async()=>({close:async()=>{}}),
     createWorkRecovery:async()=>({read:async()=>({}),setEnabled:async()=>({}),scan:async options=>{ctx.recoveryScans.push(options);return null;},review:async()=>({}),userMessages:async()=>[],close:async()=>{}}),
     createCompletionReconciler:()=>({run:async()=>({reported:[],skipped:[],errors:[]})}),
@@ -229,7 +231,7 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     assert.deepEqual(ctx.inferences, [], 'startup never calls an inference adapter');
     assert.equal(ctx.reasoningOptions.dataDir, '/private/tmp/synthetic-summon-data');
     await ctx.call('agent-sessions');
-    assert.equal(ctx.sessionReads.at(-1).includeContext, false, 'disabled reasoning leaves session polling metadata-only');
+    assert.equal(ctx.sessionReads.at(-1).includeContext, undefined, 'session polling stays metadata-only');
     await ctx.call('context-reasoning', { refresh: true });
     assert.deepEqual(plain(ctx.reasoning.calls.at(-1)), ['request', { force: true }]);
     await ctx.call('context-reasoning', { repoId: 'demo', refresh: true });
@@ -246,8 +248,8 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     }
     await ctx.call('context-reasoning-settings', { enabled: true, engine: 'auto' });
     await ctx.call('agent-sessions');
-    assert.equal(ctx.sessionReads.at(-1).includeContext, true, 'enabled reasoning opts into session evidence for evolving names');
-    assert.equal(ctx.reasoning.calls.at(-1)[0], 'decorate');
+    assert.equal(ctx.sessionReads.at(-1).includeContext, undefined, 'the window never receives conversation excerpts, even with reasoning on');
+    assert.equal(ctx.names.calls.at(-1)[0], 'decorate', 'the window sees Summon names');
 
     const evidence = await ctx.reasoningOptions.getInput();
     assert.deepEqual(plain(ctx.sessionReads.at(-1)), { maxAgeMs: 3000, forAgent: true, includeRecent: true, includeContext: true }, 'model evidence uses the masked agent view');
@@ -266,7 +268,7 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     await ctx.call('context-reasoning-settings', { enabled: false });
     assert.equal((await ctx.reasoningOptions.getInput()).utterances.length, 0, 'turning reasoning off clears captured phrases');
     await ctx.call('agent-sessions');
-    assert.equal(ctx.sessionReads.at(-1).includeContext, false);
+    assert.equal(ctx.sessionReads.at(-1).includeContext, undefined);
 
     const choicesBeforeLocal=ctx.choices.length;
     ctx.localAvailable = true;
@@ -288,6 +290,68 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
   }
   assert.equal(ctx.reasoning.closed, 1, 'shutdown closes the reasoning service');
+});
+
+test('main names every project\'s sessions with the reasoning setting, engine and pause, one model call at a time, off the socket', async () => {
+  const ctx = await launch();
+  try {
+    assert.deepEqual(ctx.health.filter(value => value.errors), []);
+    assert.equal(ctx.namesOptions.dataDir, '/private/tmp/synthetic-summon-data');
+    await ctx.namesOptions.getSessions();
+    assert.deepEqual(plain(ctx.sessionReads.at(-1)), { maxAgeMs: 3000, includeContext: true, includeRecent: true }, 'names read every project, not only the selected one');
+    ctx.extraRepos = [{ id: 'sealed', path: '/sealed-client' }];
+    const vocabulary = await ctx.namesOptions.getVocabulary();
+    assert.deepEqual(plain(ctx.flightReads.at(-1)), { maxAgeMs: 60000 });
+    assert.deepEqual(plain(vocabulary), { privatePaths: {}, repos: [{ id: 'demo', name: 'demo', path: '/demo', workstreams: ['Import pipeline: spreadsheet checks'] }] }, 'sealed repositories, folder fallbacks, the ungrouped bucket and private groups never become vocabulary');
+    assert.equal(ctx.namesOptions.getScope(), '{}', 'private paths are the naming privacy scope');
+    assert.deepEqual(plain(ctx.namesOptions.getGoals(['demo', 'bad id'])), [{ repoId: 'demo', title: 'Ship the current goal' }]);
+
+    assert.equal(ctx.namesOptions.isEnabled(), false, 'names follow the goal reasoning setting');
+    assert.equal(ctx.namesOptions.isPaused(), true, 'paused observation pauses naming');
+    ctx.state.settings.paused = false;
+    assert.equal(ctx.namesOptions.isPaused(), false);
+    ctx.power.get('suspend')();
+    assert.equal(ctx.namesOptions.isPaused(), true, 'a sleeping Mac pauses naming');
+    ctx.power.get('resume')();
+    assert.equal(ctx.namesOptions.isPaused(), false);
+
+    await ctx.call('context-reasoning-settings', { enabled: true, engine: 'auto' });
+    assert.equal(ctx.namesOptions.isEnabled(), true);
+    assert.deepEqual(plain(ctx.names.calls.at(-1)), ['poll'], 'turning reasoning on starts naming');
+    await ctx.call('agent-sessions');
+    assert.deepEqual(plain(ctx.names.calls.slice(-2).map(call => call[0])), ['poll', 'decorate']);
+    await ctx.call('context-reasoning', { refresh: true });
+    assert.deepEqual(plain(ctx.names.calls.at(-1)), ['refresh', { force: true }], 'Reason now also names sessions now');
+    assert.equal(await ctx.namesOptions.selectEngine(), 'codex', 'Auto uses the same engine choice as goal reasoning');
+    ctx.reasoning.stored.engine = 'claude';
+    assert.equal(await ctx.namesOptions.selectEngine(), 'claude', 'a chosen engine is kept');
+
+    // Goal reasoning and naming share the runner, and the second call waits for the first.
+    let release; ctx.inferGate = new Promise(resolve => { release = resolve; });
+    const request = { prompt: 'Synthetic names', schema: { type: 'object' } };
+    const naming = ctx.namesOptions.infer('local', request), goals = ctx.reasoningOptions.infer('local', request);
+    for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(ctx.inferences.length, 1, 'one model call at a time');
+    release(); await naming; await goals;
+    assert.equal(ctx.inferences.length, 2);
+    assert.equal(ctx.inferences[0].request, request);
+    assert.equal(typeof ctx.inferences[0].deps.localModel.health, 'function');
+
+    ctx.names.error = 'The local model is unavailable. Start its local service to name sessions.';
+    ctx.namesOptions.onChange();
+    assert.deepEqual(plain(ctx.health.at(-1)), { errors: ['Session names: The local model is unavailable. Start its local service to name sessions.'] });
+    ctx.namesOptions.onChange();
+    assert.equal(ctx.health.filter(value => value.errors).length, 1, 'a failure is reported once');
+    ctx.names.error = null;
+    ctx.namesOptions.onChange();
+    assert.deepEqual(plain(ctx.health.at(-1)), { resolved: ['Session names: The local model is unavailable. Start its local service to name sessions.'] });
+    assert.ok(!Object.values(ctx.rpcOptions).includes(ctx.names), 'names stay off RPC and MCP');
+    assert.ok(!Object.keys(ctx.rpcOptions).some(key => /name/i.test(key)));
+  } finally {
+    ctx.app.quit();
+    for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.equal(ctx.names.closed, 1, 'shutdown closes the namer');
 });
 
 test('main routes previews, effort overrides and feedback through the trusted window only',async()=>{

@@ -42,13 +42,22 @@
 .ks-session.failed .ks-session-state { color: var(--error); }
 .ks-session.quiet .ks-session-state, .ks-session.unknown .ks-session-state, .ks-session.open .ks-session-state { color: var(--ink-secondary); }
 .ks-session-detail, .ks-session-branch { font-size: 10px; color: var(--ink-secondary); line-height: 1.4; overflow-wrap: anywhere; }
+/* Summon's name leads the ticket with its specifics right under it (a goal's name keeps the app's own title there),
+   then the saved goal it serves, smaller. */
+.ks-session-updating { font-weight: 400; font-style: italic; color: var(--ink-secondary); }
+.ks-session-name-detail, .ks-session-original { font-size: 10px; line-height: 1.4; color: var(--ink-secondary); overflow-wrap: anywhere; }
+.ks-session-name-detail { margin-top: -2px; }
+.ks-selected-detail .ks-session-name-detail { display: block; margin-top: 2px; font-size: 11px; }
+.ks-session-goal { display: flex; align-items: flex-start; gap: 4px; font-size: 10px; line-height: 1.4; color: var(--ink-secondary); font-weight: 550; min-width: 0; }
+.ks-session-goal > svg { flex-shrink: 0; margin-top: 2px; color: var(--petrol); }
+.ks-session-goal > span { overflow-wrap: anywhere; }
 .ks-session-branch { margin-top: auto; padding-top: 5px; opacity: .8; }
 .ks-selected-detail { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--receipt-line); }
 .ks-selected-detail > div { min-width: 0; }
 .ks-selected-detail strong { display: block; margin-top: 4px; font-size: 13px; overflow-wrap: anywhere; }
 .ks-selected-detail p { margin-top: 5px; font-size: 11px; color: var(--ink-secondary); line-height: 1.5; }
 .ks-selected-location { display: grid; gap: 4px; margin: 8px 0 0; font-size: 10px; line-height: 1.5; }
-.ks-selected-location > div { display: grid; grid-template-columns: 44px minmax(0, 1fr); gap: 8px; }
+.ks-selected-location > div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; }
 .ks-selected-location dt { color: var(--ink-secondary); }
 .ks-selected-location dd { margin: 0; color: var(--ink); overflow-wrap: anywhere; }
 .ks-selected-detail > button { flex-shrink: 0; }

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowUpRight, Bot, Check, ChevronRight, CircleAlert, CircleHelp, Copy, Folder, FolderGit2, FolderOpen, GitBranch, LoaderCircle, Pin, RefreshCw, ShieldCheck, SkipForward, Sparkles, X } from 'lucide-react';
+import { ArrowUpRight, Bot, Check, ChevronRight, CircleAlert, CircleHelp, Copy, Flag, Folder, FolderGit2, FolderOpen, GitBranch, LoaderCircle, Pin, RefreshCw, ShieldCheck, SkipForward, Sparkles, X } from 'lucide-react';
 import type { AgentApp, AgentSession, AgentSessionGroup, AgentSessionGroupId, AgentSessionSource, AgentSessionWork, AgentSessionsView, LocatedAgentSession, SummonBridge } from './types';
 import { previewAgentSessions } from './preview';
+import { APP_TITLE_TIP, appTitle, goalWords, nameDetail, nameOrigin, nameSource, OUTDATED_TIP, OUTDATED_WORD, rowAppTitle } from './session-names';
 
 /* Design brief: a switchboard for a founder between tasks. Three seconds to know
    what needs him, what answered, what is still going. The needs-you band is the
@@ -38,12 +39,11 @@ const GLOSSARY: [string, string][] = [
   ['Worktree', 'An extra copy of the project folder an agent works in, so its changes stay apart from yours.'],
   ['Probably', 'The app does not say this directly, so Summon is guessing from the files it keeps on this Mac. Shown with a dotted mark.'],
   ['Quiet', 'Used recently, but not open or running. Show quiet lists these at the end.'],
-  ['The line under a title', 'What the session is touching, since titles from these apps are often vague. A spark on that line means Work in flight already described this work and Summon is borrowing its words.'],
-  ['The name in front', 'The project and, where there is one, the folder or the piece of work the session is touching. A piece of work is named in the words Work in flight used, marked with a spark. When context reasoning is available, the name follows recent conversation and work. The original app title stays underneath in quotes.'],
+  ['The line under a title', 'Under a name Summon wrote, it starts with the specifics: the idea, bug or document the work is about. Then comes the project and what the session is touching. A title in quotes is the app’s own title, shown when the name in front is not.'],
+  ['The name in front', 'A short name for the work, written by Summon from the recent conversation and marked with a spark. The line under it names the specific thing, when there is one. The app’s own title is then in the tooltip, and is never changed in the app. A session serving one of your saved goals shows that goal until Summon has named it, and a flag shows where the goal stands. A session not named yet shows its app’s title, or its project and the piece of work it is touching; a spark there means those words are Work in flight’s. A title you gave a session yourself is never replaced. Updating means the conversation has moved on since the name was written.'],
 ];
 // Only a reader that says 'user' is a claim about authorship, and Claude is the one reader that says it, so the
 // other branch means "nobody told Summon who wrote this", which is not the same as "the app wrote it".
-const APP_TIP = 'The title this session carries in its app. Summon never changes it.';
 const OWN_TIP = 'The title you gave this session.';
 
 const readStored = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
@@ -136,7 +136,7 @@ const countWords = (work: AgentSessionWork) => {
   return null;
 };
 /** The quiet line under a title: borrowed wording leads, and the counts trail it, dimmer. */
-function workWords(session: AgentSession, lead: string | null) {
+function workWords(session: AgentSession, lead: string | null, ownName = false) {
   const line = words(session.workText);
   const work = session.work ?? null;
   const name = work ? words(work.workstream) : null;
@@ -145,8 +145,9 @@ function workWords(session: AgentSession, lead: string | null) {
   // The row keeps the words short; how far along the work is stays in the tooltip with the counts.
   if (!stream || !work) return line ? { text: line, tail: null, borrowed: false, tip: line } : null;
   const tip = `${line || stream}\nIn the words Work in flight used`;
-  // The name in front already carries those words, so down here only the counts are left to say.
-  if (lead && lead.includes(stream)) { const counts = countWords(work); return counts ? { text: counts, tail: null, borrowed: false, tip } : null; }
+  // The name in front already carries those words, so down here only the counts are left to say. Under Summon's
+  // own plain name, Work in flight's colon-style title would read as a second name, so it waits in the tooltip.
+  if (ownName || (lead && lead.includes(stream))) { const counts = countWords(work); return counts ? { text: counts, tail: null, borrowed: false, tip } : null; }
   return { text: stream, tail: countWords(work), borrowed: true, tip };
 }
 const placeKind = (label: string | null) => label && label !== 'Main folder' ? label.split(' · ')[0] : null;
@@ -348,23 +349,33 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
     const inline = Boolean(state.time) && state.head.length <= LONG_STATE;
     const meta = [inline ? null : state.alone, since, session.helpers ? plural(session.helpers, 'helper') : null].filter((item): item is string => Boolean(item));
     const busy = opening === session.key;
-    // The name in front is an address. Without a project there is nothing to address, so the title leads as before,
+    // Summon's own name, when it has one, names the work and leads the row; the project moves to its chip.
+    const source = nameSource(session);
+    const named = source !== 'native';
+    // Otherwise the name in front is an address. Without a project there is nothing to address, so the title leads as before,
     // and so does it when the address would only repeat the project: fifteen rows reading 'Harbor \u00b7 main folder'
     // tell two sessions apart no better than nothing, and the app's own title is what separates them.
-    const lead = session.titleReasoning ? session.title : session.project && (session.work?.workstream || kind || session.titleIsFallback) ? headlineOf(session) : null;
+    const lead = named ? session.title : session.project && (session.work?.workstream || kind || session.titleIsFallback) ? headlineOf(session) : null;
     // A fallback title says nothing worth quoting, and a title the same as the name in front would only repeat it.
-    const originalTitle = session.titleReasoning ? session.originalTitle : session.title;
-    const quoted = lead && !session.titleIsFallback && originalTitle && originalTitle !== lead ? originalTitle : null;
+    // Under a Summon name its own specifics take that line, and the app title waits in the tooltip.
+    const detail = nameDetail(session), original = appTitle(session);
+    const quoted = named ? rowAppTitle(session) : lead && !session.titleIsFallback && session.title !== lead ? session.title : null;
     const auto = machineWritten(session);
-    const work = workWords(session, lead);
+    const work = workWords(session, lead, source === 'summon');
+    const goal = goalWords(session);
     // The words in front are Work in flight's, not Summon's, so the spark travels with them.
     const leadStream = words(session.work?.workstream);
-    const borrowedLead = !session.titleReasoning && Boolean(lead && leadStream && lead.includes(leadStream));
+    const borrowedLead = !named && Boolean(lead && leadStream && lead.includes(leadStream));
     // The name in front already says the project, and for a folder session the folder too; the chip adds only what it left out.
     const spot = lead ? (kind && !lead.includes(kind) ? kind : null) : null;
-    const where = Boolean(session.titleReasoning || quoted || spot || (!lead && (session.project || session.folder)) || session.branch || note || work || (terminal && session.folder) || session.startedFrom === 'summon');
+    // Only what the line below will actually draw counts, so a bare named row gets no empty line. A named row draws the
+    // project or folder chip itself; an address draws only the spot it left out.
+    const where = Boolean(detail || quoted || goal || (named ? session.project || session.folder : spot || (!lead && (session.project || session.folder))) || session.branch || note || work || (terminal && session.folder) || session.startedFrom === 'summon');
     // Narrow rows leave the worktree label and branch out, so the tooltip keeps them.
-    const tip = [session.titleReasoning && `Named from recent context: ${session.titleReasoning.summary}`, session.titleReasoning?.evidence.join('\n'), lead, lead && session.title !== lead ? `“${session.title}”` : null, !lead ? session.title : null, session.project && `${session.project}${session.placeLabel && session.placeLabel !== 'Main folder' ? ` · ${session.placeLabel}` : ''}`, session.branch, session.folder, words(session.workText)].filter(Boolean).join('\n');
+    // The title belongs to the session's own app, so it is quoted rather than spoken as Summon's own words.
+    // Only Claude says who wrote one, so the brighter variant means "you named this", not "the app did not".
+    const quote = quoted && <span className={`as-title-quote ${auto ? 'auto' : 'own'}`} title={auto ? APP_TITLE_TIP : OWN_TIP}><span className="sr-only">{auto ? 'titled ' : 'you named it '}</span>“{quoted}”</span>;
+    const tip = [nameOrigin(session), session.titleOutdated && named ? OUTDATED_TIP : null, lead, detail, original ? `App title: “${original}”` : quoted ? `“${quoted}”` : null, !lead ? session.title : null, goal?.tip, session.project && `${session.project}${session.placeLabel && session.placeLabel !== 'Main folder' ? ` · ${session.placeLabel}` : ''}`, session.branch, session.folder, words(session.workText)].filter(Boolean).join('\n');
     return <li key={session.key} className="as-item">
       <div className={`as-row ${session.group} ${session.unread ? 'unread' : ''} ${session.openable === 'none' ? 'inert' : ''}`}>
         {/* Every row in New replies is unread, so the dot only says something outside that group. */}
@@ -373,22 +384,26 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
         <div className="as-main">
           <div className="as-line">
             <button type="button" id={`${id}-title`} className={`as-open ${!lead && session.titleIsFallback ? 'fallback' : ''}`} title={tip} aria-disabled={session.openable === 'none' || undefined} aria-describedby={`${where ? `${id}-where ` : ''}${id}-state ${id}-hint`} onClick={() => void openSession(session)}>
-              {session.titleReasoning && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">named from recent context, </span></>}{borrowedLead && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">in the words Work in flight used, </span></>}{lead || session.title}
-              <span className="sr-only">{`, ${session.appLabel}${session.unread && session.group !== 'new' ? ', new reply' : ''}${session.pinned ? ', pinned' : ''}, ${glyphWord[glyph.split(' ')[0]] || session.group}`}</span>
+              {source === 'summon' && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">named by Summon, </span></>}{source === 'goal' && <span className="sr-only">named after your saved goal, </span>}{borrowedLead && <><Sparkles size={10} className="as-lead-spark" aria-hidden="true" /><span className="sr-only">in the words Work in flight used, </span></>}{lead || session.title}
+              <span className="sr-only">{`${named && session.titleOutdated ? ', name updating' : ''}, ${session.appLabel}${session.unread && session.group !== 'new' ? ', new reply' : ''}${session.pinned ? ', pinned' : ''}, ${glyphWord[glyph.split(' ')[0]] || session.group}`}</span>
             </button>
+            {named && session.titleOutdated && <span className="as-updating" aria-hidden="true" title={OUTDATED_TIP}>{OUTDATED_WORD}</span>}
             {session.pinned && <Pin size={11} className="as-pin" aria-hidden="true" />}
             <span className="as-app" aria-hidden="true">{session.appLabel}</span>
           </div>
           {where && <div className={`as-where ${work ? 'with-work' : ''}`} id={`${id}-where`}>
-            {/* The title belongs to the session's own app, so it is quoted rather than spoken as Summon's own words.
-                Only Claude says who wrote one, so the brighter variant means "you named this", not "the app did not". */}
-            {quoted && <span className={`as-title-quote ${auto ? 'auto' : 'own'}`} title={auto ? APP_TIP : OWN_TIP}><span className="sr-only">{auto ? 'titled ' : 'you named it '}</span>“{quoted}”</span>}
-            {lead && !session.titleReasoning
+            {/* The specific thing a Summon name is about, directly under it and ahead of the place. */}
+            {detail && <span className="as-name-detail">{detail}</span>}
+            {!named && quote}
+            {lead && !named
               ? spot && <span className="as-chip as-place"><FolderGit2 size={11} aria-hidden="true" /><span className="as-chip-text">{spot}</span></span>
               : session.project
                 ? <span className="as-chip as-project"><FolderGit2 size={11} aria-hidden="true" /><span className="as-chip-text">{session.project}{kind && <span className="as-chip-soft"> · {kind}</span>}</span></span>
                 : session.folder && !terminal && <span className="as-chip as-folder"><Folder size={11} aria-hidden="true" /><span className="as-chip-text">{session.folder}</span></span>}
-            {session.titleReasoning && <span className="as-chip" title={`${session.titleReasoning.summary}\n${session.titleReasoning.evidence.join('\n')}`}><Sparkles size={11} aria-hidden="true" /><span className="as-chip-text">From recent context</span></span>}
+            {/* The saved goal this session serves, in your own words, with where it stands. */}
+            {goal && <span className="as-chip as-goal" title={goal.tip}><Flag size={11} aria-hidden="true" /><span className="sr-only">serves </span><span className="as-chip-text">{goal.text}</span></span>}
+            {/* Under a goal's name the app title is the small print, after the project and the goal. */}
+            {named && quote}
             {session.branch && <span className="as-chip as-branch"><GitBranch size={11} aria-hidden="true" /><span className="sr-only">branch </span><span className="as-chip-text">{session.branch}</span></span>}
             {/* Summon's own fact, not the app's: this session was started with the button in the workbench. */}
             {session.startedFrom === 'summon' && <span className="as-chip as-origin" title="Started with the Start button in Summon"><Bot size={11} aria-hidden="true" /><span className="as-chip-text">Started from Summon</span></span>}
@@ -503,7 +518,7 @@ export function SessionsPanel({ bridge, preview, onClose, onView }: Props) {
           {sources.map(source => { const line = sourceLine(source, allSessions); return <li key={`${source.app}-${source.label}`} className={`as-source ${sourceTone(source)}`}><span className="as-source-dot" aria-hidden="true" />{line.lead && <span className="as-source-label">{line.lead}</span>}{line.lead && <span className="as-dot" aria-hidden="true"> · </span>}<span className="as-source-text">{line.text}</span></li>; })}
           {sources.length === 0 && <li className="as-source absent"><span className="as-source-dot" aria-hidden="true" /><span className="as-source-text">No agent apps found on this Mac.</span></li>}
         </ul>
-        <p className="as-privacy"><ShieldCheck size={11} aria-hidden="true" />Read from each app’s own files on this Mac. Never the conversations.</p>
+        <p className="as-privacy"><ShieldCheck size={11} aria-hidden="true" />Read from each app’s own files on this Mac. Summon’s names are written from recent messages by the model set for context reasoning, which may be a local model or Claude or Codex in the cloud.</p>
         </div>
         {(warnings.length > 0 || pollProblem) && <ul className="as-warnings">
           {pollProblem && <li><CircleAlert size={12} aria-hidden="true" />Could not check just now. Showing the last check.</li>}

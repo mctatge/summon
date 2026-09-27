@@ -72,6 +72,7 @@ test('classifyFile and excerptEligible only allow ordinary text files', () => {
 test('redact masks personal and secret values but keeps ordinary code', () => {
   const secrets = [
     'contact jane.doe+pilot@example.edu today',
+    '[View order](https://mail.host.test/mail/u/?authuser=sam.lee%40harbor.test#all/abc)',
     'const key = "sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123"',
     'OPENAI=sk-proj-AbCdEf0123456789xyzXYZ',
     'token ghp_abcdefghijklmnopqrstuvwxyz0123456789',
@@ -88,7 +89,7 @@ test('redact masks personal and secret values but keeps ordinary code', () => {
     'DB_PASSWORD=hunter2', 'SMTP_PASSWORD="Tr0ub4dor&3"', 'OPENAI_API_KEY=abc123def456', 'STRIPE_SECRET=abcd1234efgh', 'MYSQL_ROOT_PASSWORD: example',
     'app.config["SECRET_KEY"] = "mysecretvalue"', 'AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY', '  POSTGRES_PASSWORD: supersecret99', 'dbPassword: "hunter22x"'
   ];
-  const leaks = ['jane.doe', 'example.edu', 'api03', 'AbCdEf0123', 'ghp_', 'xoxb-', 'AKIAIOSFODNN7', 'hunter2', '3f786850e3875', 'dGhpcyBpcy', '555-1234', '7946', 'battery', 'abcdefghijklmnop', 'b3BlbnNzaC1',
+  const leaks = ['jane.doe', 'example.edu', 'sam.lee', 'harbor.test', 'api03', 'AbCdEf0123', 'ghp_', 'xoxb-', 'AKIAIOSFODNN7', 'hunter2', '3f786850e3875', 'dGhpcyBpcy', '555-1234', '7946', 'battery', 'abcdefghijklmnop', 'b3BlbnNzaC1',
     'Tr0ub4dor', 'abc123def456', 'abcd1234efgh', 'example', 'mysecretvalue', 'wJalrXUtnFEMI', 'supersecret99', 'hunter22x'];
   const masked = secrets.map(redact).join('\n');
   assert.match(masked, /\[redacted\]/);

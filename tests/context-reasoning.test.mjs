@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { buildContextEvidence, contextPrompt, localContextEvidence, LOCAL_CONTEXT_SCHEMA, validateContextResult, createContextReasoning } from '../src/core/context-reasoning.mjs';
+import { buildContextEvidence, contextPrompt, localContextEvidence, CONTEXT_SCHEMA, LOCAL_CONTEXT_SCHEMA, validateContextResult, createContextReasoning } from '../src/core/context-reasoning.mjs';
 
 const at = Date.parse('2026-09-20T12:00:00Z');
 const session = (text = 'Fix the pause detection and keep listening') => ({ key: 'codex:desktop:1', title: 'Hello', titleIsAuto: true, repoId: 'r1', project: 'Project', updatedAt: new Date(at).toISOString(), recentContext: { messages: [{ role: 'user', text, at }] } });
 const input = () => ({ flight: { repos: [{ id: 'r1', name: 'Project', path: '/project', places: [] }] }, sessions: { groups: [{ sessions: [session()] }] }, snapshot: { projects: [{ id: 'p1', path: '/project' }], currentProjectId: 'p1', settings: { activityEnabled: true, accessibilityEnabled: true, excludedApps: ['Passwords'] }, activity: { app: 'Editor', title: 'voice.ts', at: new Date(at).toISOString(), suggestedProjectId: 'p1' } } });
-const answer = (evidence = ['E1']) => ({ summary: 'Improving voice conversation.', goals: [{ repoId: 'r1', title: 'Keep voice listening through pauses', status: 'working', summary: 'The latest request asks for continuous listening.', confidence: 'high', evidence }], sessionTitles: [{ sessionKey: 'codex:desktop:1', title: 'Fix voice pause handling', summary: 'Reflects the latest user request.', confidence: 'high', evidence }] });
+const answer = (evidence = ['E1']) => ({ summary: 'Improving voice conversation.', goals: [{ repoId: 'r1', title: 'Keep voice listening through pauses', status: 'working', summary: 'The latest request asks for continuous listening.', confidence: 'high', evidence }] });
 
 test('prompt uses recent user direction, current app evidence and selected project without treating app selection as proof', () => {
   const packet = buildContextEvidence(input(), at);
@@ -29,29 +29,32 @@ test('assistant progress messages cannot crowd the latest user direction out of 
   assert.ok(packet.evidence.some(item => item.role === 'user' && item.text.includes('keep listening')));
 });
 
-test('inferences require known evidence and same-project user intent; titles cannot cite another session', () => {
+test('inferences require known evidence and same-project user intent', () => {
   const value = input();
   value.sessions.groups[0].sessions.push({ ...session('Build a calendar'), key: 'other', repoId: 'r2' });
   const packet = buildContextEvidence(value, at);
   const valid = validateContextResult(answer(), packet, { engine: 'local', updatedAt: new Date(at).toISOString() });
   assert.equal(valid.goals.length, 1);
-  assert.equal(valid.sessionTitles.length, 1);
   assert.equal(valid.goals[0].links.sessionKey, 'codex:desktop:1');
-  for (const evidence of [['unknown'], ['E2'], ['E3']]) {
-    const invalid = validateContextResult(answer(evidence), packet, { engine: 'local' });
-    assert.equal(invalid.goals.length, 0);
-    assert.equal(invalid.sessionTitles.length, 0);
-  }
+  for (const evidence of [['unknown'], ['E2'], ['E3']]) assert.equal(validateContextResult(answer(evidence), packet, { engine: 'local' }).goals.length, 0);
 });
 
-test('user-chosen names are preserved and secrets/private paths are masked before generation', () => {
+test('secrets and private paths are masked before generation', () => {
   const value = input();
   value.privatePaths = { '/project': ['private/'] };
-  value.sessions.groups[0].sessions[0] = { ...session('Work on private/payroll.csv with api_key=sk-abcdefghijklmnopqrstuvwxy123456'), titleIsAuto: false };
-  const packet = buildContextEvidence(value, at);
-  const prompt = contextPrompt(packet);
-  assert.doesNotMatch(prompt, /payroll|sk-abcdefghijkl/);
-  assert.equal(validateContextResult(answer(), packet).sessionTitles.length, 0);
+  value.sessions.groups[0].sessions[0] = session('Work on private/payroll.csv with api_key=sk-abcdefghijklmnopqrstuvwxy123456');
+  assert.doesNotMatch(contextPrompt(buildContextEvidence(value, at)), /payroll|sk-abcdefghijkl/);
+});
+
+test('goal reasoning no longer names sessions; session-names.mjs owns names', async t => {
+  const packet = buildContextEvidence(input(), at);
+  assert.doesNotMatch(contextPrompt(packet), /sessionTitles|title each session|canRename/);
+  assert.equal(packet.sessions[0].canRename, undefined);
+  assert.deepEqual(Object.keys(CONTEXT_SCHEMA.properties), ['summary', 'goals']);
+  assert.deepEqual(Object.keys(validateContextResult({ ...answer(), sessionTitles: [{ sessionKey: 'codex:desktop:1', title: 'Old style name' }] }, packet)), ['summary', 'goals']);
+  const f = await fixture(t); await f.service.refresh();
+  assert.equal(f.service.read().sessionTitles, undefined);
+  assert.equal(f.service.decorateSessions, undefined);
 });
 
 test('private path filtering covers every repository beyond the per-helper 40-prefix limit', () => {
@@ -82,8 +85,8 @@ test('local reasoning bounds the workload while retaining the latest user direct
   for (const session of packet.sessions) assert.ok(packet.evidence.some(item => item.sessionKey === session.key && item.role === 'user'));
   assert.ok(packet.evidence.every(item => !item.sessionKey || packet.sessions.some(session => session.key === item.sessionKey)));
   assert.equal(LOCAL_CONTEXT_SCHEMA.properties.goals.maxItems, 2);
-  assert.equal(LOCAL_CONTEXT_SCHEMA.properties.sessionTitles.maxItems, 3);
-  assert.match(contextPrompt(packet), /up to 2 current goals and 3 sessionTitles/);
+  assert.equal(LOCAL_CONTEXT_SCHEMA.properties.goals.items.properties.evidence.maxItems, 2);
+  assert.match(contextPrompt(packet), /up to 2 current goals,/);
 });
 
 test('excluded apps, private documents, paused collection and disabled window context cannot enter app evidence', () => {
@@ -108,19 +111,15 @@ async function fixture(t, extra = {}) {
   return { service, calls, dataDir, setInput: value => { current = value; }, advance: amount => { time += amount; }, setScope: value => { scope = value; } };
 }
 
-test('changed evidence refreshes goals and titles, unchanged polling is free, failures retain visible stale state', async t => {
+test('changed evidence refreshes goals, unchanged polling is free, failures retain visible stale state', async t => {
   const f = await fixture(t);
   await f.service.refresh();
   assert.equal(f.calls.length, 1);
   assert.equal(f.calls[0].engine, 'codex');
   assert.equal(f.service.read().status, 'ready');
-  const decorated = f.service.decorateSessions(input().sessions);
-  assert.equal(decorated.groups[0].sessions[0].title, 'Fix voice pause handling');
-  assert.equal(decorated.groups[0].sessions[0].originalTitle, 'Hello');
   f.advance(130_000); await f.service.refresh(); assert.equal(f.calls.length, 1);
   const changed = input(); changed.sessions.groups[0].sessions[0] = session('Now improve the calendar');
   f.setInput(changed);
-  assert.equal(f.service.decorateSessions(changed.sessions).groups[0].sessions[0].title, 'Hello');
   await f.service.refresh(); assert.equal(f.calls.length, 2);
   await f.service.updateSettings({ engine: 'local' });
   assert.equal(f.service.read().goals.length, 0);
@@ -150,12 +149,12 @@ test('privacy changes while selecting a provider prevent the model call itself',
   assert.equal(count, 0);
 });
 
-test('throttled updates do not attach an old title to a changed conversation', async t => {
+test('changed conversation inside the interval waits for the next pass', async t => {
   const f = await fixture(t); await f.service.refresh();
   const changed = input(); changed.sessions.groups[0].sessions[0] = session('Now implement a calendar'); f.setInput(changed);
   await f.service.refresh();
   assert.equal(f.calls.length, 1);
-  assert.equal(f.service.decorateSessions(changed.sessions).groups[0].sessions[0].title, 'Hello');
+  assert.equal(f.service.read().stale, true);
 });
 
 test('new conversation arriving while reasoning runs discards the obsolete result', async t => {
@@ -188,7 +187,6 @@ test('app switches and assistant progress during generation keep useful results 
   assert.equal(f.service.read().status, 'ready');
   assert.equal(f.service.read().goals.length, 1);
   assert.equal(f.service.read().stale, true);
-  assert.equal(f.service.decorateSessions(changed.sessions).groups[0].sessions[0].title, 'Fix voice pause handling');
 });
 
 test('local failures explain the retry without exposing raw provider details', async t => {

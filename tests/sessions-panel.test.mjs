@@ -19,7 +19,8 @@ async function load(file, modules) {
 }
 
 const preview = (await load('preview.ts', {})).exports;
-const panel = await load('SessionsPanel.tsx', { './preview': preview });
+const names = (await load('session-names.ts', { './work-records': (await load('work-records.ts', {})).exports })).exports;
+const panel = await load('SessionsPanel.tsx', { './preview': preview, './session-names': names });
 const { SessionsPanel } = panel.exports;
 const { WorkInFlightPanel } = (await load('WorkInFlightPanel.tsx', { './preview': preview })).exports;
 const sample = preview.previewAgentSessions;
@@ -55,25 +56,71 @@ test('the board leads with what needs you, then new replies, then working', () =
   assert.ok(!text.includes('Weekly review prep'));
 });
 
-test('reasoned session names follow recent work while keeping the original name and explanation', () => {
-  const session = { ...original.groups[0].sessions[0], title: 'Finish keyboard navigation in the preview', originalTitle: 'Can you look at this?', headline: 'Harbor · old workstream',
-    titleReasoning: { summary: 'Later messages focus on keyboard access.', evidence: ['The latest request asks for arrow-key navigation.'], confidence: 'high', engine: 'local', model: 'local-model', updatedAt: new Date().toISOString() } };
+test('a Summon name leads the row with its detail directly under it, and the app title moves to the tooltip', () => {
+  const session = { ...original.groups[0].sessions[0], title: 'Email draft', titleDetail: 'Update on chart labels for Professor Rivera', originalTitle: 'Can you look at this?', titleSource: 'summon',
+    headline: 'Harbor · Email draft', servesGoal: { id: 'rivera', title: 'Follow up with Professor Rivera', status: 'working' } };
   withGroups([{ ...original.groups[0], sessions: [session] }], () => {
     const html = board();
-    assert.match(html, /class="as-open [^"]*"[^>]*>[\s\S]*?Finish keyboard navigation in the preview/);
-    assert.ok(words(html).includes('“Can you look at this?”'), 'the original app title remains available');
-    assert.ok(words(html).includes('From recent context'), 'the user can distinguish an inferred name');
-    assert.match(html, /Later messages focus on keyboard access/);
-    assert.match(html, /The latest request asks for arrow-key navigation/);
-    assert.ok(!words(html).includes('old workstream'), 'a stale project address does not displace the new name');
-    assert.match(html, /as-chip as-project/, 'project context remains visible beside a generated title');
+    const text = words(html);
+    assert.match(html, /class="as-open "[^>]*><svg[^>]*as-lead-spark[^>]*>[\s\S]*?<\/svg><span class="sr-only">named by Summon, <\/span>Email draft/);
+    // The specifics are the first words on the line under the name, ahead of the project.
+    assert.match(html, /<div class="as-where[^"]*" id="[^"]*-where"><span class="as-name-detail">Update on chart labels for Professor Rivera<\/span><span class="as-chip as-project">/);
+    assert.ok(!text.includes('Can you look at this?') && !html.includes('as-title-quote'), 'the app title is not on the row');
+    assert.match(html, /class="as-open "[^>]*title="Named by Summon from the recent conversation\nEmail draft\nUpdate on chart labels for Professor Rivera\nApp title: “Can you look at this\?”\n/, 'the tooltip has the name, its detail and the app title');
+    // A plain name does not say the goal, so the chip says it, with where it stands.
+    assert.ok(text.includes('Follow up with Professor Rivera · Working'));
+    assert.match(html, /title="Serves your saved goal “Follow up with Professor Rivera” · Working"/);
+    assert.ok(!html.includes('as-updating') && !text.includes('From recent context'));
   });
+  // Model-written words are text only, in the row and in the tooltip.
+  withGroups([{ ...original.groups[0], sessions: [{ ...session, titleDetail: '<script>alert(1)</script>', originalTitle: '<img src=x onerror=alert(1)>' }] }], () => {
+    const html = board();
+    assert.ok(html.includes('<span class="as-name-detail">&lt;script&gt;alert(1)&lt;/script&gt;</span>') && html.includes('App title: “&lt;img src=x onerror=alert(1)&gt;”'));
+    assert.ok(!html.includes('<script>') && !html.includes('<img'));
+  });
+  // Without a detail the line under the name is the place alone, and a detail that repeats the name is dropped.
+  for (const titleDetail of ['', 'email draft']) withGroups([{ ...original.groups[0], sessions: [{ ...session, titleDetail }] }], () => {
+    const html = board();
+    assert.ok(!html.includes('as-name-detail') && !html.includes('as-title-quote'));
+    assert.match(html, /<div class="as-where[^"]*" id="[^"]*-where"><span class="as-chip as-project">/);
+  });
+  // A bare name, with nothing to say under it, gets no line at all rather than an empty one.
+  const bare = { ...session, titleDetail: '', project: null, folder: null, branch: null, servesGoal: null, work: null, workText: '' };
+  withGroups([{ ...original.groups[0], sessions: [bare] }], () => {
+    const html = board();
+    assert.ok(!html.includes('as-where'), 'no place line');
+    assert.match(html, /class="as-open "[^>]*aria-describedby="as-[^" ]*-state as-[^" ]*-hint"/, 'and nothing points at one');
+  });
+  // A name the conversation has moved past keeps showing, with one quiet word beside it.
+  withGroups([{ ...original.groups[0], sessions: [{ ...session, titleOutdated: true }] }], () => {
+    const html = board();
+    assert.match(html, /class="as-updating" aria-hidden="true" title="The conversation has moved on[^"]*">updating<\/span>/);
+    assert.match(html, /<span class="sr-only">, name updating, Claude app/);
+  });
+});
+
+test('a session linked to a saved goal is named after it, and a title the person gave is never replaced', () => {
+  const linked = { ...original.groups[0].sessions[0], title: 'Follow up with Professor Rivera', originalTitle: 'Onboarding checklist copy', titleSource: 'goal', servesGoal: { id: 'rivera', title: 'Follow up with Professor Rivera', status: 'planned' } };
+  const own = { ...original.groups[1].sessions[1], titleSource: 'native', servesGoal: { id: 'importer', title: '<img src=x onerror=alert(1)> Check the importer', status: 'needs-verification' } };
+  withGroups([{ ...original.groups[0], sessions: [linked] }, { ...original.groups[1], sessions: [own] }], () => {
+    const html = board();
+    const text = words(html);
+    assert.match(html, /<span class="sr-only">named after your saved goal, <\/span>Follow up with Professor Rivera/);
+    assert.ok(text.includes('“Onboarding checklist copy”') && text.includes('Saved goal · Planned'));
+    // The person's own title keeps the row it always had; the goal it serves is spelled out, as text only.
+    assert.match(html, /class="as-title-quote own"/);
+    assert.ok(text.includes('Harbor · Pricing page: clearer plan table and copy'));
+    assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt; Check the importer · Needs verification') && !html.includes('<img'));
+  });
+  // An older core sends no name fields at all, and the row keeps the app title it always led with.
+  const older = { ...original.groups[2].sessions[2] };
+  withGroups([{ ...original.groups[2], sessions: [older] }], () => assert.match(board(), /class="as-open "[^>]*>Morning desk summary/));
 });
 
 test('rows carry the title, place, state words, unread marks and the open action', () => {
   const html = board();
   const text = words(html);
-  for (const expected of ['Onboarding checklist copy', 'Claude app', 'Harbor · calm-lighthouse-8611fb', 'Claude worktree', 'quiet-harbor-ff8777', 'Waiting for your OK · 4 min', 'Open in Claude',
+  for (const expected of ['Onboarding copy edit', 'Checklist for new teams', 'Claude app', 'Harbor · Claude worktree', 'quiet-harbor-ff8777', 'Waiting for your OK · 4 min', 'Open in Claude',
     'New reply · 12 min ago', 'Working · 18 min', '2 helpers', 'Working · just started', 'Open, your move', 'Show folder', '~/Projects/Pocket Meter',
     'Interrupted when the app closed', 'Last active 2 h ago', 'Cursor is closed, so nothing there is running.', 'Claude app · 2 open', 'Hermes · 1 open']) assert.ok(text.includes(expected), expected);
   // Only outside New replies, where the heading already says every row is unread.
@@ -129,6 +176,10 @@ test('UI copy uses plain words without em dashes', () => {
   const strings = panel.source.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');
   assert.ok(!strings.includes('—'));
   for (const term of ['Needs you', 'New reply', 'Working', 'Open, your move', 'Interrupted', 'Helpers', 'Worktree', 'Probably']) assert.ok(panel.source.includes(`['${term}',`), term);
+  // The glossary describes today's plain names, and no longer an app title kept underneath in quotes.
+  const glossary = words(board());
+  assert.ok(glossary.includes('The name in front A short name for the work, written by Summon from the recent conversation') && glossary.includes('it starts with the specifics'));
+  assert.ok(!/what it is doing about it now|stays underneath in quotes|leads with that goal/.test(glossary));
 });
 
 test('Work in flight folder rows show which agents are there', () => {
@@ -148,6 +199,10 @@ test('the toast sits above the footer, and a session that cannot be opened says 
   assert.ok(footer.includes('class="as-toast "'), 'the toast is the footer\'s own child');
   assert.equal(html.indexOf('as-toast'), footer.indexOf('as-toast') + html.indexOf('<footer'), 'and it is nowhere else');
   assert.match(panel.source, /bottom: calc\(100% \+ 12px\)|as-toast/);
+  // The privacy line says where the list is read and who writes the names, without claiming no message is ever read.
+  const privacy = words(footer.slice(footer.indexOf('as-privacy')));
+  assert.ok(privacy.includes('Read from each app’s own files on this Mac. Summon’s names are written from recent messages by the model set for context reasoning, which may be a local model or Claude or Codex in the cloud.'), privacy);
+  assert.ok(!footer.includes('Never the conversations'));
 
   const group = structuredClone(original.groups.find(item => item.id === 'open'));
   group.sessions[0] = { ...group.sessions[0], openable: 'none', openHint: 'Cannot be opened from Summon' };
@@ -166,6 +221,10 @@ test('the work line says what a session is touching, and borrowed words wear a s
   // The name in front carries the borrowed wording now, so the line under it is left with the counts alone.
   assert.ok(text.includes('Draft Board · Draft picks: faster counter-pick scoring'), 'borrowed wording leads the row');
   assert.ok(!html.includes('class="as-work borrowed"'), 'and is not said twice');
+  // Under Summon's own name the colon-style workstream title would read as a second name: the line keeps the counts,
+  // and Work in flight's words wait in the tooltip.
+  assert.match(html, /Preview drawer build<span class="sr-only">[\s\S]*?class="as-name-detail">Templates tab formatting compare<\/span>[\s\S]*?<span class="as-work " title="Templates tab: new preview and formatting compare \(still in progress\)\nIn the words Work in flight used"><span class="as-work-text">7 files<\/span><\/span>/);
+  assert.ok(!text.includes('Templates tab: new preview and formatting compare'), 'the workstream title is not on the named row');
   // A session from an app version that sends no name in front keeps the spark line it always had.
   const older = { ...original.groups[1].sessions[0], headline: null };
   withGroups([{ id: 'new', title: 'New replies', sessions: [older] }], () => {

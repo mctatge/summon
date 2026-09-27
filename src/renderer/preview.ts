@@ -20,7 +20,6 @@ export function previewContextReasoning(): ContextReasoningView {
       createdAt: ago(12), updatedAt: ago(2),
       inference: { summary: index ? 'Recent session requests focus on counter-pick scoring and clearer recommendations.' : 'The latest conversation connects the preview, shared controls and project context into one understandable workspace.', evidence: ['Recent user messages describe the desired outcome.', `Active sessions and changed files belong to ${repo.name}.`], confidence: 'high', engine: 'local', model: 'Local preview', updatedAt: ago(2) },
     })),
-    sessionTitles: [],
   };
 }
 
@@ -258,7 +257,7 @@ export const previewAgentSessions: AgentSessionsView = {
   totals: { needsYou: 1, newReplies: 2, working: 3, open: 1 },
   groups: [
     { id: 'needs-you', title: 'Needs you', sessions: [
-      agentSession({ key: 'claude:desktop:local_preview-onboarding-copy', app: 'claude', surface: 'desktop', appLabel: 'Claude app', title: 'Onboarding checklist copy', headline: 'Harbor · calm-lighthouse-8611fb', project: 'Harbor', placeId: 'place-harbor-claude', repoId: 'harbor', placeLabel: 'Claude worktree · calm-lighthouse-8611fb', folder: '~/Projects/Harbor/.claude/worktrees/calm-lighthouse-8611fb', branch: 'quiet-harbor-ff8777',
+      agentSession({ key: 'claude:desktop:local_preview-onboarding-copy', app: 'claude', surface: 'desktop', appLabel: 'Claude app', title: 'Onboarding copy edit', titleDetail: 'Checklist for new teams', originalTitle: 'Onboarding checklist copy', titleSource: 'summon', headline: 'Harbor · Onboarding copy edit', project: 'Harbor', placeId: 'place-harbor-claude', repoId: 'harbor', placeLabel: 'Claude worktree · calm-lighthouse-8611fb', folder: '~/Projects/Harbor/.claude/worktrees/calm-lighthouse-8611fb', branch: 'quiet-harbor-ff8777',
         group: 'needs-you', activity: 'needs-you', reason: 'Waiting for your OK', stateText: 'Waiting for your OK · 4 min', sinceText: '4 min', sinceAt: ago(4), updatedAt: ago(4), openHint: 'Open in Claude',
         work: sessionWork({ added: 40, removed: 6, files: 2, area: 'docs' }), workText: '+40 −6 in 2 files · mostly docs' }),
     ] },
@@ -271,10 +270,12 @@ export const previewAgentSessions: AgentSessionsView = {
         work: sessionWork({ added: 76, removed: 16, files: 2, area: 'src/pricing', workstream: 'Pricing page: clearer plan table and copy', workstreamState: 'looks ready to save' }), workText: 'Pricing page: clearer plan table and copy (looks ready to save)' }),
     ] },
     { id: 'working', title: 'Working', sessions: [
-      agentSession({ key: 'claude:desktop:local_preview-templates-drawer', app: 'claude', surface: 'desktop', appLabel: 'Claude app', title: 'Templates tab preview drawer', headline: 'Harbor · Templates tab: new preview and formatting compare', project: 'Harbor', placeId: 'place-harbor-main', repoId: 'harbor', placeLabel: 'Main folder', folder: '~/Projects/Harbor', branch: 'main',
+      agentSession({ key: 'claude:desktop:local_preview-templates-drawer', app: 'claude', surface: 'desktop', appLabel: 'Claude app', title: 'Preview drawer build', titleDetail: 'Templates tab formatting compare', originalTitle: 'Templates tab preview drawer', titleSource: 'summon',
+        servesGoal: { id: 'preview-goal-harbor-preview', title: 'Make the preview useful', status: 'needs-verification' }, headline: 'Harbor · Preview drawer build', project: 'Harbor', placeId: 'place-harbor-main', repoId: 'harbor', placeLabel: 'Main folder', folder: '~/Projects/Harbor', branch: 'main',
         group: 'working', activity: 'working', stateText: 'Working · 18 min', sinceText: '18 min', sinceAt: ago(18), updatedAt: ago(0), helpers: 2, openHint: 'Open in Claude',
         work: sessionWork({ added: 514, removed: 858, files: 7, area: 'src/templates', scope: 'folder', workstream: 'Templates tab: new preview and formatting compare', workstreamState: 'still in progress' }), workText: 'Templates tab: new preview and formatting compare (still in progress)' }),
-      agentSession({ key: 'codex:desktop:0d4e5f6a-1b2c-4d3e-8f9a-7b6c5d4e3f2a', app: 'codex', surface: 'desktop', appLabel: 'Codex', title: 'Nightly snapshot cleanup', headline: 'Draft Board', project: 'Draft Board', placeId: 'place-draft-codex', repoId: 'draft-board', placeLabel: 'Codex worktree · 0ced', folder: '~/.codex/worktrees/0ced/Draft Board',
+      agentSession({ key: 'codex:desktop:0d4e5f6a-1b2c-4d3e-8f9a-7b6c5d4e3f2a', app: 'codex', surface: 'desktop', appLabel: 'Codex', title: 'Snapshot cleanup', titleDetail: 'Nightly draft board exports', originalTitle: 'Nightly snapshot cleanup', titleSource: 'summon', titleOutdated: true,
+        headline: 'Draft Board · Snapshot cleanup', project: 'Draft Board', placeId: 'place-draft-codex', repoId: 'draft-board', placeLabel: 'Codex worktree · 0ced', folder: '~/.codex/worktrees/0ced/Draft Board',
         group: 'working', activity: 'working', stateText: 'Working · 44 min', sinceText: '44 min', sinceAt: ago(44), updatedAt: ago(1), unread: true, openHint: 'Open in Codex',
         work: sessionWork({ added: 318, removed: 51, files: 5, area: 'api', scope: 'folder' }), workText: '+318 −51 in 5 files · mostly api' }),
       agentSession({ key: 'hermes:desktop:20260917_091502_a1b2c3', app: 'hermes', surface: 'desktop', appLabel: 'Hermes', title: 'Morning desk summary', headline: 'Somewhere else', titleIsAuto: false,

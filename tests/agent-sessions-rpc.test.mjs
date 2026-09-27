@@ -260,7 +260,8 @@ async function startMain({ createAgentSessions, createWorkInFlight, createVisual
     createAgentSessions, createVisualWorkspace, clipboard: { writeText: text => { copied.push(text); } },
     createDesktopTeachingBridge:()=>({}),createDesktopTeaching:async()=>({}),createTeaching:({browser})=>browser,
     createBrowserTeachingBridge:()=>({}),createBrowserTeaching:async()=>({read:async()=>({phase:'idle'}),action:async()=>({phase:'idle'}),handles:()=>false,command:async()=>null,cancel:async()=>{},close:async()=>{}}),
-    createContextReasoning:async()=>({read:()=>({settings:{enabled:false,engine:'auto'}}),request:()=>({settings:{enabled:false,engine:'auto'}}),decorateSessions:view=>view,close:async()=>{}}),runContextReasoning:()=>assert.fail('No reasoning model runs in this fixture.'),
+    createContextReasoning:async()=>({read:()=>({settings:{enabled:false,engine:'auto'}}),request:()=>({settings:{enabled:false,engine:'auto'}}),close:async()=>{}}),runContextReasoning:()=>assert.fail('No reasoning model runs in this fixture.'),
+    createSessionNames:async()=>({poll:()=>({}),refresh:async()=>({}),decorate:view=>view,read:()=>({status:'disabled',error:null,problem:null,names:{}}),close:async()=>{}}),
     createDesktopVoice: () => ({ publish: noop, updateVoice: noop, snapshot: () => ({state:'off',mode:'off',micActive:false}), toggle: noop, stop: async () => {}, close: async () => {} }),
     createTranscriber: () => ({ warm: async () => {}, release: noop, close: async () => {} }),
     nativeImage: { createFromBitmap: () => ({ setTemplateImage: noop }), createEmpty: () => ({}) }, sessionSummaryText: () => '', ipcMain: { handle: (name, handler) => handlers.set(name, handler) },
@@ -379,7 +380,7 @@ test('main confines visual reads and user confirmation to trusted IPC, exposing 
   assert.equal(await options.getWorkInFlight(), work);
   assert.deepEqual(plain(sourceCalls.pop()), ['flight', { maxAgeMs: 20000 }]);
   assert.equal(await options.getAgentSessions(), agents);
-  assert.deepEqual(plain(sourceCalls.pop()), ['sessions', { maxAgeMs: 3000, includeContext: false }]);
+  assert.deepEqual(plain(sourceCalls.pop()), ['sessions', { maxAgeMs: 3000 }]);
   ctx.window.visible = false;
   await options.getAgentSessions();
   assert.equal(sourceCalls.pop()[1].maxAgeMs, Infinity, 'hidden-window visual reads reuse the session cache');
@@ -478,17 +479,17 @@ test('main wires Agent sessions into IPC, the socket service and shutdown, and o
   assert.deepEqual(ctx.health.filter(value => value.errors), [], 'no startup problems');
 
   assert.equal(await ctx.call('agent-sessions'), view);
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000, includeContext: false }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000 }]);
   await ctx.call('agent-sessions', { refresh: true });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0, includeContext: false }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0 }]);
   await ctx.call('agent-sessions', { refresh: false });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000, includeContext: false }]);
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 3000 }]);
   // A hidden window keeps polling (background throttling is off), so it gets the last check instead of a new one.
   ctx.window.visible = false;
   await ctx.call('agent-sessions');
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: null, includeContext: false }], 'Infinity (JSON null): answered from the last check');
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: null }], 'Infinity (JSON null): answered from the last check');
   await ctx.call('agent-sessions', { refresh: true });
-  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0, includeContext: false }], 'Check again still checks');
+  assert.deepEqual(calls.pop(), ['read', { maxAgeMs: 0 }], 'Check again still checks');
   ctx.window.visible = true;
   for (const bad of [{ refresh: 'yes' }, { forAgent: false }, [], 'refresh']) await assert.rejects(ctx.call('agent-sessions', bad), /Invalid request/);
 

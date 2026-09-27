@@ -98,8 +98,11 @@ test('Claude grouping explains expired logins whether the CLI exits cleanly or n
   await assert.rejects(runGrouping('claude',{prompt:'x',schema},clean.deps),/Reconnect Claude/);
   const exited=fakes(tmp,()=>{throw Object.assign(new Error('exit 1'),{stdout:JSON.stringify(expired),exitCode:1});});
   await assert.rejects(runGrouping('claude',{prompt:'x',schema},exited.deps),/Reconnect Claude/);
-  const other=fakes(tmp,()=>({stdout:JSON.stringify({is_error:true,subtype:'error_max_turns'})}));
+  const other=fakes(tmp,()=>({stdout:JSON.stringify({is_error:true,subtype:'error_during_execution'})}));
   await assert.rejects(runGrouping('claude',{prompt:'x',schema},other.deps),/could not group/);
+  // A structured answer that failed its format check stops at the turn limit; that is worth one more request.
+  const refused=fakes(tmp,()=>({stdout:JSON.stringify({is_error:true,subtype:'error_max_turns'})}));
+  await assert.rejects(runGrouping('claude',{prompt:'x',schema},refused.deps),{code:'UNREADABLE_ANSWER',message:/could not read/});
   const junk=fakes(tmp,()=>({stdout:'<html>'}));
   await assert.rejects(runGrouping('claude',{prompt:'x',schema},junk.deps),/could not read/);
 });

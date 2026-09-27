@@ -1004,3 +1004,36 @@ test('Claude recent context follows later desktop turns and excludes metadata, s
   assert.deepEqual(busy.messages.map(item => item.text), ['Current goal step 7', 'Progress update 3', 'Progress update 4', 'Progress update 5', 'Progress update 6', 'Progress update 7']);
   assert.equal(busy.updatedAt, NOW + 7);
 });
+
+test('Claude recent context reaches back past a long agent turn for the latest request, then reads only new lines', async t => {
+  const f = await mainFixture(t);
+  const reader = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
+  const file = path.join(f.harbor, `${CLI.A}.jsonl`);
+  const limits = { tailBytes: 2048, promptChunkBytes: 1024, promptBytes: 64 * 1024 };
+  const progress = (from, count) => Array.from({ length: count }, (_, i) => assistantLine(from + i, 'tool_use', {
+    message: { role: 'assistant', content: [{ type: 'text', text: `Step ${from + i} ${'x'.repeat(300)}` }], stop_reason: 'tool_use' } }));
+  const prompt = (ts, text) => userLine(ts, { entrypoint: 'claude-desktop', message: { role: 'user', content: text } });
+  await fs.appendFile(file, jsonl([prompt(NOW - 9000, 'Plan the spring newsletter'), ...progress(NOW - 8000, 40),
+    userLine(NOW - 7000, { message: { content: [{ type: 'tool_result', content: 'tool output' }] } }), ...progress(NOW - 6000, 10)]));
+  const context = async () => byId(await reader.read({ limits })).get(D.A).recentContext.messages;
+  const first = await context();
+  assert.equal(first[0].role, 'user');
+  assert.equal(first[0].text, 'Plan the spring newsletter');
+  assert.equal(first.filter(item => item.role === 'user').length, 1);
+  assert.equal(reader.stats().promptReads, 1);
+  const size = (await fs.stat(file)).size;
+  await fs.appendFile(file, jsonl(progress(NOW - 5000, 12)));
+  assert.equal((await context())[0].text, 'Plan the spring newsletter', 'the remembered request survives more progress');
+  await fs.appendFile(file, jsonl([prompt(NOW - 4000, 'Now draft the opening paragraph'), ...progress(NOW - 3000, 40)]));
+  assert.ok((await fs.stat(file)).size - size > limits.tailBytes);
+  const later = await context();
+  assert.equal(later[0].text, 'Now draft the opening paragraph', 'a newer request written past the tail replaces the older one');
+  assert.equal(later.filter(item => item.role === 'user').length, 1);
+  // Beyond the budget, nothing is invented.
+  const shallow = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
+  const none = byId(await shallow.read({ limits: { tailBytes: 2048, promptChunkBytes: 1024, promptBytes: 4096 } })).get(D.A).recentContext.messages;
+  assert.ok(none.every(item => item.role === 'assistant'));
+  const zero = createClaudeReader({ homeDir: f.home, ...deps(f.processes) });
+  const found = byId(await zero.read({ limits: { tailBytes: 2048, promptChunkBytes: 0, promptBytes: 64 * 1024 } })).get(D.A).recentContext.messages;
+  assert.equal(found[0].text, 'Now draft the opening paragraph', 'a zero chunk size still ends the look-back');
+});

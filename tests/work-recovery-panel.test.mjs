@@ -119,7 +119,7 @@ const repos = [{ id: 'repo-a', projectId: 'project-a' }, { id: 'repo-b', project
 const { WorkTreePanel } = await load('WorkTreePanel.tsx', {
   './WorkTree': { WorkTree: () => null }, './WorkRecordEditor': { WorkRecordEditor: () => null }, './WorkRecordInspector': { WorkRecordInspector: () => null },
   './WorkRecoveryPanel': { WorkRecoveryPanel: ({ repoId }) => React.createElement('div', { 'data-recovery-repo': repoId }) },
-  './work-records': {}, './visual-sessions': {},
+  './work-records': {}, './visual-sessions': {}, './session-names': await load('session-names.ts', { './work-records': await load('work-records.ts') }),
   './preview': { previewWorkInFlight: { repos }, previewAgentSessions: { groups: [] }, previewVisualRepository: () => ({ goals: [] }) },
 });
 test('recovery uses the uniquely resolved repository identity and is absent across projects or ambiguous scopes', () => {

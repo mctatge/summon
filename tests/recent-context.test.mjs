@@ -24,3 +24,11 @@ test('assistant-only evidence remains bounded and does not invent a user request
   assert.ok(context.messages.every(item => item.role === 'assistant'));
   assert.equal(context.messages[0].text, 'Reply 2');
 });
+
+test('scheduled heartbeats and background-task notices are not user direction', () => {
+  const heartbeat = '<heartbeat>\n<current_time_iso>2026-01-05T09:00:00Z</current_time_iso>\nCheck the order status.\n</heartbeat>';
+  const notice = '<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command finished</summary>\n</task-notification>';
+  const context = recentContext([message('user', 'Track the refund for the blue jacket', 1000), message('assistant', 'Watching the order.', 2000),
+    message('user', heartbeat, 3000), message('user', [{ type: 'text', text: notice }], 4000), message('user', `${notice}\nAlso check the receipt`, 5000)]);
+  assert.deepEqual(context.messages.map(item => [item.role, item.text]), [['user', 'Track the refund for the blue jacket'], ['assistant', 'Watching the order.'], ['user', 'Also check the receipt']]);
+});
