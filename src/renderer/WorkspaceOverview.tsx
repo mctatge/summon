@@ -134,6 +134,14 @@ export function SessionsOverviewCard({ bridge, preview, onOpen, onView }: Overvi
   </section>;
 }
 
+const DAY_MS = 86_400_000;
+/** A weekly window's even pace: by the end of day n of 7 (counted from the window's start), n/7 of it may be used. */
+export function weeklyPace(windowId: string, resetsAt: number, now: number) {
+  if (!windowId.startsWith('seven_day') || !Number.isFinite(resetsAt) || resetsAt <= now) return null;
+  const day = Math.min(7, Math.max(1, Math.ceil((now - (resetsAt - 7 * DAY_MS)) / DAY_MS)));
+  return { day, remaining: 100 - day / 7 * 100 };
+}
+
 const unavailableUsage = (report: UsageReport | null) => !report ? 'No reading yet.' : ({ not_signed_in: 'Not signed in. Open Usage for sign-in details.', not_installed: 'CLI not installed.', not_applicable: 'No subscription limits reported.', error: report.error || 'Usage could not be read.', ok: 'No usage windows reported.' })[report.status];
 
 export function UsageOverviewCard({ usage, onOpen }: { usage?: UsageView; onOpen: () => void }) {
@@ -158,9 +166,11 @@ export function UsageOverviewCard({ usage, onOpen }: { usage?: UsageView; onOpen
           const remaining = known ? Math.max(0, Math.min(100, 100 - window.usedPercent)) : null;
           const reset = date(window.resetsAt);
           const elapsed = Number.isFinite(reset) && reset <= now;
+          const pace = weeklyPace(window.id, reset, now);
+          const paceWords = pace && `even pace keeps about ${Math.round(pace.remaining)}% by the end of day ${pace.day} of 7`;
           return <div className="workspace-usage-window" key={window.id}>
             <div className="workspace-usage-label"><span>{window.label}</span><strong>{remaining === null ? 'Unknown' : `${Math.round(remaining)}% remaining`}</strong></div>
-            {remaining !== null && <div className="workspace-usage-track" data-stale={stale || elapsed} role="meter" aria-label={`${name} ${window.label} allowance remaining${stale || elapsed ? ', last reading' : ''}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(remaining)}><span style={{ width: `${remaining}%` }} /></div>}
+            {remaining !== null && <div className="workspace-usage-track" data-stale={stale || elapsed} role="meter" title={paceWords ? `The notch: ${paceWords}.` : undefined} aria-label={`${name} ${window.label} allowance remaining${stale || elapsed ? ', last reading' : ''}${paceWords ? `; ${paceWords}` : ''}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(remaining)}><span style={{ width: `${remaining}%` }} />{pace && <i className="workspace-usage-pace" style={{ left: `${pace.remaining}%` }} aria-hidden="true" />}</div>}
             <small className="workspace-usage-reset">{elapsed ? 'Reset time passed; awaiting the next reading.' : Number.isFinite(reset) ? `Resets ${stamp(window.resetsAt!)}` : 'Reset time unavailable.'}</small>
           </div>;
         }) : <p className="workspace-card-note">{unavailableUsage(report)}</p>}

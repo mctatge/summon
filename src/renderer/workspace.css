@@ -110,8 +110,10 @@ button.workspace-summary-row:focus-visible { border-radius: 12px; outline-offset
 .workspace-usage-window + .workspace-usage-window { margin-top: 15px; }
 .workspace-usage-label { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin-bottom: 8px; font-size: 11px; color: var(--ink-secondary); }
 .workspace-usage-label > strong { color: var(--ink); font-weight: 550; font-variant-numeric: tabular-nums; }
-.workspace-usage-track { height: 6px; overflow: hidden; border-radius: 6px; background: var(--paper-inset); }
+.workspace-usage-track { position: relative; height: 6px; border-radius: 6px; background: var(--paper-inset); }
 .workspace-usage-track > span { display: block; height: 100%; border-radius: inherit; background: var(--accent-meter); }
+/* Weekly windows: where an even daily pace would leave the bar by the end of today. */
+.workspace-usage-pace { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; border-radius: 1px; background: var(--ink-secondary); }
 .workspace-usage-track[data-stale='true'] > span { opacity: .5; }
 .workspace-usage-reset { display: block; margin-top: 7px; color: var(--ink-secondary); font-size: 11px; line-height: 1.5; }
 
