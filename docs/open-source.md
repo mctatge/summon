@@ -96,11 +96,66 @@ disclaimer); clean contribution terms. MIT would be acceptable; AGPL (opcode's
 choice) would discourage the casual fork-and-extend adoption this repo exists
 to invite.
 
+## Prior art: munder-difflin (checked 2026-09-27)
+
+[chaitanyagiri/munder-difflin](https://github.com/chaitanyagiri/munder-difflin)
+works on the same problem from the opposite side, so it is a source of ideas
+and small PRs, not a project to fold Summon into. It is an MIT Electron app of
+about 66k lines (about 8k stars) that launches 13 coding CLIs in its own
+terminals and controls them: an orchestrator agent hands out work through
+on-disk mailboxes, agents appear on a 2D office floor, and it adds
+self-written agent memory, Slack/webhook/scheduled triggers and a voice
+assistant. Summon watches sessions and keeps records; it never controls them.
+A second-pass check confirmed 91 of 105 claims below and rejected none.
+
+**Where it breaks the rules above.** Claude agents run in `bypassPermissions`
+by default; it writes skip-prompt and folder-trust keys into
+`~/.claude/settings.json` and `~/.claude.json` without a backup or atomic
+write; an inherited `ANTHROPIC_API_KEY` reaches every agent (a test locks this
+in); Codex workers get `--dangerously-bypass-hook-trust` and a symlink to
+`auth.json`; PostHog analytics is on by default in official builds; its
+webhook and Slack servers listen on all interfaces. v0.5.2 and v0.5.3 shipped
+as binaries only while the public source stays at 0.4.6, so the Pro licence,
+account sign-in, system-wide dictation and meeting capture are not open source.
+
+**Worth taking (mostly ideas, not code).** Per-session context-window fill
+from the Claude tail parse (count the last real assistant usage; skip
+`<synthetic>` rows); counting a recent tool call or prompt as progress so
+reviews and test runs stop reading as "spinning"; login-shell PATH capture for
+CLIs installed through nvm, volta or asdf, plus that folder in the fixed child
+PATH; detecting squash-merged branches with a read-only patch-id comparison; a
+"waiting on you" view of blocked work and its dependents; for voice, a context
+snapshot at connect with appended changes, spoken "needs you" and "finished"
+notices, a microphone picker and project names in Whisper's `initial_prompt`;
+for a public release, a PR evidence check that reads only the PR description.
+MIT code copied into this Apache-2.0 repo keeps its MIT notice. Not usable:
+the LimeZu tile art (no redistribution), the Office characters and quotes,
+anything only in the binary releases; take the 2D tile engine from the
+ISC-licensed `shahar061/the-office` with both notices.
+
+**PRs Summon could send them.** Hook notification types by
+`notification_type` rather than English text, subagent ids not overriding the
+agent id, `SubagentStop` not meaning the parent is idle, `StopFailure` and
+`SessionEnd`; counting each assistant message once by `(message.id,
+requestId)`; dropping an inherited `ANTHROPIC_API_KEY`; binding the webhook and
+Slack servers to 127.0.0.1 (report privately through their SECURITY.md); a
+credential-free subscription-limit reader like `usage-claude.mjs`; a pure-JS
+BM25 search; running their tests in CI.
+
+Running both on one Mac: their Claude agents are ordinary Claude sessions, so
+Summon lists them and your own Stop hook fires for each, including their
+hidden memory runs; their Codex workers each get a separate `CODEX_HOME`, so
+Summon cannot see them. Their claim that `claude -p` moved to a separate Agent
+SDK credit pool on 2026-06-15 is outdated: Anthropic announced that change on
+2026-05-13 and paused it on 2026-06-15 before it took effect (the help-center
+page cited below), so headless calls still draw from the plan's limits and the
+usage meter reads the right pool.
+
 ## Key sources
 
 - https://code.claude.com/docs/en/legal-and-compliance (live 2026-08-18)
 - https://code.claude.com/docs/en/sdk/sdk-overview (incl. branding guidelines)
-- https://support.claude.com/en/articles/15036540 (June 16, 2026 pause note)
+- https://support.claude.com/en/articles/15036540 (June 15, 2026 pause of the announced Agent SDK credit; page dated June 16)
 - https://www.theregister.com/2026/02/20/anthropic_clarifies_ban_third_party_claude_access/
 - https://www.theregister.com/2026/04/06/anthropic_closes_door_on_subscription/
 - https://zed.dev/blog/anthropic-subscription-changes
