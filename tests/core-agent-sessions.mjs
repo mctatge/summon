@@ -19,7 +19,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const uuid = n => `0199${String(n).padStart(4, '0')}-aaaa-4bbb-8ccc-${String(n).padStart(12, '0')}`;
 const SURFACE = { claude: 'desktop', codex: 'desktop', cursor: 'ide', hermes: 'desktop' };
 const LABEL = { claude: 'Claude app', codex: 'Codex', cursor: 'Cursor', hermes: 'Hermes' };
-const SESSION_KEYS = ['key', 'app', 'surface', 'appLabel', 'title', 'titleIsFallback', 'headline', 'titleIsAuto', 'project', 'placeId', 'repoId', 'placeLabel', 'folder', 'branch', 'group', 'activity', 'reason', 'stateText', 'sinceText', 'sinceAt', 'updatedAt', 'unread', 'pinned', 'live', 'confidence', 'helpers', 'work', 'workText', 'startedFrom', 'openable', 'openHint'].sort();
+const SESSION_KEYS = ['key', 'app', 'surface', 'appLabel', 'title', 'titleIsFallback', 'headline', 'titleIsAuto', 'project', 'placeId', 'repoId', 'placeLabel', 'folder', 'branch', 'group', 'activity', 'reason', 'stateText', 'sinceText', 'sinceAt', 'updatedAt', 'unread', 'pinned', 'live', 'confidence', 'helpers', 'work', 'workText', 'startedFrom', 'openable', 'openHint', 'facts', 'factsText'].sort();
 const WORK_KEYS = ['added', 'removed', 'files', 'area', 'scope', 'workstream', 'workstreamState', 'workstreamInferred', 'touchedFiles', 'touchedAt'].sort();
 
 function raw(app, id, extra = {}) {
@@ -624,6 +624,9 @@ test('slow readers answer by the budget, finish once, and their result is used n
   assert.deepEqual(first.sources.find(source => source.app === 'cursor'), { app: 'cursor', label: 'Cursor', available: false, running: false, detail: 'Still checking.' });
   assert.equal(first.sources.find(source => source.app === 'claude').detail, null);
   assert.deepEqual(first.groups.flatMap(group => group.sessions.map(item => item.key)), ['claude:desktop:local_fast']);
+  // A reader late on its first read has no last answer to stand in, and the view says so rather than showing none as fact.
+  assert.ok(first.warnings.includes('Cursor sessions are still being read. They will show on the next check.'), JSON.stringify(first.warnings));
+  assert.equal(first.warnings.some(item => item.startsWith('Claude sessions are still')), false);
   // A second read while the first reader call is still running waits on the same call.
   const second = await f.svc.read({ maxAgeMs: 60000 });
   assert.equal(second.sources.find(source => source.app === 'cursor').detail, 'Still checking.', 'A partial view is never served from the cache.');
@@ -846,7 +849,8 @@ test('Work in flight lists places from its last scan without scanning', async t 
   assert.deepEqual([gone.added, gone.removed, gone.files, gone.area, gone.workstream], [0, 0, 0, null, null], 'a folder that is gone counts nothing');
   assert.equal(cursor.area, 'pilot', 'exactly half of the changed files is enough');
   assert.equal(cursor.files, 4);
-  assert.deepEqual(listed.map(place => Object.keys(place).sort()), listed.map(() => ['added', 'area', 'files', 'id', 'kind', 'label', 'missing', 'path', 'readiness', 'removed', 'repoId', 'repoName', 'workstream', 'workstreams']));
+  assert.deepEqual(listed.map(place => Object.keys(place).sort()), listed.map(() => ['added', 'area', 'files', 'id', 'kind', 'label', 'missing', 'path', 'readiness', 'removed', 'repoId', 'repoName', 'uncommitted', 'withheld', 'workstream', 'workstreams']));
+  assert.ok(listed.every(place => Array.isArray(place.withheld) && place.withheld.every(name => place.uncommitted.includes(name))), 'withheld names are some of the uncommitted ones');
 
   // Every piece of work the folder has been grouped into travels too, so a session in it can be matched to one of
   // them by the files it edited. The biggest one is what `workstream` names; the list is all of them.

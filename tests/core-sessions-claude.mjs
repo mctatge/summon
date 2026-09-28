@@ -74,11 +74,13 @@ function desktopRecord(id, cli, extra = {}, { tail = {}, padFirst = false } = {}
   if (cli === null) delete body.cliSessionId;
   return JSON.stringify(body);
 }
+// These rows name no session. A row naming a different session than its transcript is read as copied from that session
+// (a fork) and skipped, so a fixture that wants that says so itself.
 function userLine(ts, extra = {}) {
-  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'user', message: { role: 'user', content: 'Please fix the session list' }, uuid: `u-${ts}`, timestamp: iso(ts), ...extra };
+  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'user', message: { role: 'user', content: 'Please fix the session list' }, uuid: `u-${ts}`, timestamp: iso(ts), ...extra };
 }
 function assistantLine(ts, stop, extra = {}) {
-  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', sessionId: 'x', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'assistant', message: { id: 'm', model: 'claude-opus-5', role: 'assistant', content: [{ type: stop === 'tool_use' ? 'tool_use' : 'text', text: 'The session list is updated' }], stop_reason: stop }, uuid: `a-${ts}`, timestamp: iso(ts), ...extra };
+  return { parentUuid: null, isSidechain: false, userType: 'external', cwd: '/Users/someone/Projects/Summon', version: '2.1.218', gitBranch: 'feature/x', entrypoint: 'cli', type: 'assistant', message: { id: 'm', model: 'claude-opus-5', role: 'assistant', content: [{ type: stop === 'tool_use' ? 'tool_use' : 'text', text: 'The session list is updated' }], stop_reason: stop }, uuid: `a-${ts}`, timestamp: iso(ts), ...extra };
 }
 
 // The app's own diff counts, keyed '<local id>:owner/repo:branch'. Only numbers are ever stored here.
@@ -297,6 +299,8 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
     unread: true, archived: false, pinned: true, live: true, confidence: 'reported', helpers: 2, model: 'claude-opus-5',
     work: { added: 340, removed: 20, files: 12, area: null, scope: 'session', workstream: null, workstreamState: null },
     touchedPaths: null, touchedHashes: null, touchedFiles: null, touchedAt: null,
+    // The work log knows when the person last wrote, and that the finished reply asked nothing.
+    workLog: { git: [], tests: [], edited: [], asked: null, lastUserAt: NOW - 3 * MIN },
   });
   // B: waiting for a permission prompt; title cleaned and capped (older unread value lost to the newer one).
   const b = s.get(D.B);
@@ -339,6 +343,7 @@ test('Claude reader: desktop, registry, unread, worktree and terminal sessions',
     unread: false, archived: false, pinned: false, live: true, confidence: 'reported', helpers: 0, model: 'claude-opus-5',
     work: null, // the app counts diffs for its own sessions only, and never invents them for a terminal one
     touchedPaths: null, touchedHashes: null, touchedFiles: null, touchedAt: null,
+    workLog: { git: [], tests: [], edited: [], asked: null, lastUserAt: NOW - 4 * MIN },
   });
   // Old CLI without status or entrypoint: tail says the model is working → inferred.
   const t2 = s.get(T.T2);
@@ -420,6 +425,9 @@ test('Claude reader: repeat reads are change-gated', async t => {
   // editReads counts transcripts whose new bytes were read; editChecks counts the stat that decides that, which is the
   // whole cost of a warm pass.
   assert.deepEqual({ registryReads: warm.registryReads, prefixReads: warm.prefixReads, fullParses: warm.fullParses, tailReads: warm.tailReads, unreadReads: warm.unreadReads, editReads: warm.editReads }, { registryReads: 0, prefixReads: 0, fullParses: 0, tailReads: 0, unreadReads: 0, editReads: 0 });
+  // The work log does not even open a transcript whose stat has not changed.
+  assert.deepEqual({ workChecks: warm.workChecks, workReads: warm.workReads }, { workChecks: 0, workReads: 0 });
+  assert.ok(cold.workReads > 0, JSON.stringify(cold));
   assert.ok(warm.editChecks > 0, JSON.stringify(warm));
 
   // The app saves atomically: write a temp file and rename it over the session file.

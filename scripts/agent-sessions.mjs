@@ -166,7 +166,9 @@ function row(session, group) {
   const helpers = Number.isSafeInteger(session.helpers) && session.helpers > 0 ? plural(session.helpers, 'helper') : '';
   const state = [clean(session.stateText, 80), helpers, session.unread === true && group !== 'new' ? 'new reply' : ''].filter(Boolean).join(' · ');
   const glyph = session.activity === 'failed' ? '✕' : GLYPHS[group] || '·';
-  return { glyph, title, fallback, mid, state };
+  // Observed facts about what the session did ("Committed 1a2b3c4, pushed · 3 uncommitted files"), on a line of their own.
+  const facts = clean(session.factsText, 300);
+  return { glyph, title, fallback, mid, state, facts };
 }
 
 /** Pure renderer: AgentSessions view → terminal text. `color` adds bold/dim only; `width` cuts each line with …. */
@@ -210,6 +212,7 @@ export function renderBoard(view, { width = Infinity, color = false, recent = tr
       if (midSize > 0) parts.push([GAP], [fit(item.mid, midSize), 'dim']);
       parts.push([GAP], [item.state]);
       lines.push(parts);
+      if (item.facts) lines.push([['  '], [item.facts, 'dim']]);
     }
   }
   if (hidden) lines.push([[`${plural(hidden, 'more session was', 'more sessions were')} active recently. Add --recent to see ${hidden === 1 ? 'it' : 'them'}.`, 'dim']]);

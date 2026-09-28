@@ -155,6 +155,11 @@ export type AgentSession = { key: string; app: AgentApp; surface: 'desktop' | 't
   children?: AgentChild[]; helpersInferred?: boolean;
   // 'summon' when Summon started this session itself (Summon's own fact, never app text); null for every other row.
   startedFrom: 'summon' | null;
+  // Observed facts about what the session did, and the same said in one plain line (see AgentSessionFacts below).
+  // Absent from older cores; null and '' when nothing is known.
+  facts?: AgentSessionFacts | null; factsText?: string;
+  // true while the transcript behind those facts is still being read, so a missing fact is not yet an answer.
+  factsPending?: boolean;
   openable: 'link' | 'copy' | 'folder' | 'none'; openHint: string };
 export type AgentSessionGroup = { id: AgentSessionGroupId; title: string; sessions: AgentSession[] };
 export type AgentSessionSource = { app: AgentApp; label: string; available: boolean; running: boolean; detail: string | null };
@@ -254,3 +259,44 @@ export type CountedAgentSessionWork = AgentSessionWork & Partial<AgentSessionEdi
 // What a reader sends the aggregator about those backups: the hashed names, the count and the newest time. The hashes
 // are one way, so they can be compared with a path we already have and can never be turned back into one we do not.
 export type AgentSessionBackups = { touchedHashes: string[] | null; touchedFiles: number | null; touchedAt: number | null };
+
+// Session facts (decisions 2026-09-27, "Session cards"): what a session did, read without a model from its own
+// transcript (sessions/work-log.mjs) and joined with its repository through read-only git (session-facts.mjs).
+// A commit: sha is short (7 characters). oid, the full id, is in the window's own read only. exists is false when the
+//   repository no longer has it. pushed is true when a remote-tracking ref contains it, as far as this Mac last knew
+//   without fetching, and null when the repository tracks no remote or could not be asked. onBranch is false when
+//   no local branch holds an unpushed commit any more. inferred marks a commit found only because its committer time
+//   fell inside the window of a commit call that left no annotation (a -q commit).
+export type AgentSessionCommit = { sha: string; oid?: string | null; branch: string | null; at: string | null; inferred: boolean;
+  exists: boolean | null; pushed: boolean | null; onBranch: boolean | null };
+// Another listed session (any app) that edited some of the same uncommitted files; title is the one this view shows.
+//   thisWroteLast and otherWroteLast count the shared files where both sides have times; the rest are unknown.
+export type AgentSessionShare = { key: string; title: string | null; files: number; thisWroteLast: number; otherWroteLast: number };
+// Window read only: each shared file (folder-relative), who else holds it and who wrote it last when every side knows.
+export type AgentSessionSharedFile = { path: string; with: string[]; lastBy: string | null };
+// The newest test counts in the session's folder; stale is true when its own edits there are newer, null when unknown.
+//   passed and failed are both null for a run that printed its failures but no summary could be found (it failed).
+//   `go test` counts packages unless the whole verbose output was in view.
+export type AgentSessionTestRunner = 'node' | 'tap' | 'pytest' | 'jest' | 'vitest' | 'cargo' | 'go';
+export type AgentSessionTestRun = { runner: AgentSessionTestRunner; passed: number | null; failed: number | null; at: string | null; stale: boolean | null };
+// uncommitted.files: folder-relative names, newest edit first in the window's read; an agent-facing read carries at
+//   most five that pass the private-path, secret-name and sealed filters, and none for a session in a private folder.
+// asked: the session's last finished reply ends on a question and the person has not written since.
+// unidentified: quiet commits counted in commitCount whose SHA is not known (made outside Work in flight's folders, or
+//   their folder's reflog could not be read). largestTest: the run in the same folder that counted the most tests, when
+//   it counted more than lastTest.
+export type AgentSessionFacts = {
+  commits: AgentSessionCommit[]; commitCount: number; unidentified?: number;
+  uncommitted: { count: number; shared: number; files: string[]; placeId?: string } | null;
+  sharedWith: AgentSessionShare[]; sharedFiles?: AgentSessionSharedFile[];
+  lastTest: AgentSessionTestRun | null; largestTest?: AgentSessionTestRun | null; asked: { at: string | null } | null };
+// What the Claude reader sends the aggregator (epoch milliseconds), from the session's transcript and its sub-agents':
+// git actions from the harness's gitOperation annotations, newest first (a commit with quiet true has no sha, only its
+// folder and the window from..at), test counts matched in a test run's output, the files it edited in the pass's wider
+// window (edit calls and file-history lines) with their edit times where known (newest first), the open question, and
+// when the person last wrote. No text.
+export type AgentSessionGitAction = { kind: 'commit' | 'push' | 'branch' | 'pr'; at: number; folder: string | null; sha: string | null;
+  branch: string | null; action: string | null; number: number | null; quiet: boolean; from: number | null };
+export type AgentSessionWorkLog = { git: AgentSessionGitAction[];
+  tests: Array<{ runner: AgentSessionTestRunner; passed: number | null; failed: number | null; at: number; folder: string | null }>;
+  edited: Array<{ path: string; at: number | null }>; asked: { at: number } | null; lastUserAt: number | null };

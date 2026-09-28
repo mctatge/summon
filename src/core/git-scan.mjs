@@ -108,7 +108,9 @@ export function gitArgs(cwd, args) {
   return ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-c', 'diff.external=', '-c', 'diff.autoRefreshIndex=false', '-c', 'core.quotePath=false', '-c', 'color.ui=false', '-c', 'log.showSignature=false', '-C', cwd, ...args];
 }
 
-function gitRunner({ run, git, env }, { timeout = LIMITS.timeout, maxBytes = LIMITS.maxBytes, concurrency = LIMITS.concurrency } = {}) {
+/** A git caller that runs every command through gitArgs() with GIT_ENV re-applied, a timeout, an output cap and a
+ *  concurrency gate: (cwd, args, { maxBytes, input }) => stdout. Also used by session-facts.mjs. */
+export function gitRunner({ run, git, env }, { timeout = LIMITS.timeout, maxBytes = LIMITS.maxBytes, concurrency = LIMITS.concurrency } = {}) {
   if (typeof run !== 'function') throw new TypeError('A process runner is required.');
   if (!absolute(git)) throw new TypeError('The git executable must be an absolute path.');
   const gate = limiter(Math.max(1, concurrency));

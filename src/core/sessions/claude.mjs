@@ -2,8 +2,10 @@
  * Sources: the live registry (~/.claude/sessions/<pid>.json), the app's claude-code-sessions/<acct>/<org>/local_*.json files,
  * the app's localStorage unread marks, git-worktrees.json, and the last 64 KB of terminal transcripts. When that tail holds
  * no request from the person, a bounded read further back finds the latest one, remembered per file so only new lines are read.
- * Which files a session edited comes from the transcript's own file-history metadata lines, paths only, and from the
- * names of the entries in that session's ~/.claude/file-history folder, which are hashes of the paths.
+ * Which files a session edited, and when it last backed each one up, comes from the transcript's own file-history
+ * metadata lines (paths and backupTime only), and from the names of the entries in that session's
+ * ~/.claude/file-history folder, which are hashes of the paths. What a session did (git actions, test counts, whether
+ * it ended on a question) comes from one more forward pass over the same transcripts, described in work-log.mjs.
  * Recent evidence keeps user/assistant text only, dropping tool output and thinking blocks.
  * Never reads peer-token .key files, config.json, last-prompt lines or the file-history backup files
  * under ~/.claude/file-history/; never writes, locks or connects to anything. */
@@ -12,6 +14,9 @@ import path from 'node:path';
 import os from 'node:os';
 import { sealedPath } from '../workstreams.mjs';
 import { recentContext, CONTEXT_LINE_BYTES } from './recent-context.mjs';
+import { openRead, readRange } from './read-file.mjs';
+import { readWorkLog, workLogOf, mergeWorkLogs } from './work-log.mjs';
+import { EDIT_TYPES, historyEdits, ownerState, ownLine, ownEdits, releaseHeld } from './edited-files.mjs';
 
 const DAY = 864e5;
 const ORIGIN = 'https://claude.ai';
@@ -27,6 +32,16 @@ const DEFAULT_LIMITS = {
   fullScanMs: 30000, helperWindowMs: 60000, helperEntries: 400, promptWaitMs: 30000, staleWorkingMs: 10 * 60000, concurrency: 8,
   editBytes: 96 * 1024, editReads: 80, editPaths: 200, editLineBytes: 512 * 1024,
   historyDirs: 120, historyEntries: 1000, historyHashes: 400, historyWindowMs: 6 * 3600000,
+  // The work log (work-log.mjs): at most workReads transcripts per read; a first look starts at most workFirstBytes before
+  // the end, later looks read what was appended, at most workBytes each. Lines over workLineBytes are skipped; per
+  // session at most workGit git actions and workTests test runs are kept, and at most workPending classified calls wait
+  // for their result. The pass also reads the newest workHelpers of each session's sub-agent transcripts, chosen from at
+  // most workHelperScan names (sessions on this Mac have up to 281). It stops starting new files after workMs of its
+  // own, or once the whole read is workDeadlineMs old, and the rest wait for the next read: measured on this Mac, a cold
+  // pass over 40 transcripts read about 79 MB for about 0.9 s of CPU, which alone could push a cold read past the
+  // aggregator's 4 s, while a read after that costs a stat per transcript.
+  workReads: 40, workFirstBytes: 4 * 1024 * 1024, workBytes: 4 * 1024 * 1024, workLineBytes: 1024 * 1024,
+  workGit: 50, workTests: 20, workPending: 200, workHelpers: 40, workHelperScan: 2000, workMs: 400, workDeadlineMs: 2000, workConcurrency: 4,
 };
 const UNREAD_FAILED = "Claude's unread marks could not be read.";
 const PROCESSES_FAILED = 'Could not check which Claude sessions are running.';
@@ -49,13 +64,8 @@ const HISTORY_ENTRY = /^([0-9a-f]{16})@v\d{1,9}$/;
 // Transcript lines whose type comes first and is not one of these are skipped before parsing (last-prompt, file-history, …).
 const LEADING_TYPE = /^\{\s*"type"\s*:\s*"([^"]{1,64})"/;
 const TAIL_TYPES = new Set(['user', 'assistant', 'system', 'custom-title', 'ai-title']);
-// The two metadata lines that name a file the session edited. Nothing else on them is read, and the backup files they
-// point at (under ~/.claude/file-history/) hold the file contents and are never opened.
-const EDIT_TYPES = new Set(['file-history-snapshot', 'file-history-delta']);
-// Names that never travel, whatever folder they sit in. The full check, which also knows the repo's own private
-// folders, runs in the aggregator; this one keeps a key or a .env out of the reader's answer in the first place.
-const SECRET_BASE = /^(?:\.env(?:\..*)?|\.envrc|\.netrc|\.npmrc|\.pgpass|\.pypirc|\.git-credentials|\.dev\.vars|id_rsa|id_dsa|id_ecdsa|id_ed25519)$/i;
-const SECRET_EXT = /\.(?:pem|key|p12|pfx|keychain|keystore|jks|kdbx|env|tfvars|p8|ppk)$/i;
+// The two metadata lines that name a file the session edited (EDIT_TYPES, edited-files.mjs). Nothing else on them is
+// read, and the backup files they point at (under ~/.claude/file-history/) hold the file contents and are never opened.
 const OK_WAITS = new Set(['permission prompt', 'sandbox request', 'worker request']);
 const QUESTION_WAITS = new Set(['input needed', 'dialog open', 'goal proposal']);
 const PREFIX = {
@@ -76,7 +86,6 @@ const time = value => Number.isFinite(value) && value > 0 && value < 1e14 ? Math
 const whole = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const isoTime = value => typeof value === 'string' ? time(Date.parse(value)) : null;
 const absPath = value => typeof value === 'string' && value.length <= 4096 && path.isAbsolute(value) && !/[\u0000-\u001f]/.test(value) ? path.normalize(value) : null;
-const secretName = base => SECRET_BASE.test(base) || SECRET_EXT.test(base) || /secret|credential/i.test(base);
 const cliId = value => typeof value === 'string' && CLI_ID.test(value) ? value : null;
 const nowOf = now => typeof now === 'function' ? now() : Number.isFinite(now) ? now : Date.now();
 const signature = stat => stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}` : 'none';
@@ -96,18 +105,8 @@ async function statOf(file) {
 async function lstatOf(file) {
   try { return await fs.lstat(file, { bigint: true }); } catch { return null; }
 }
-// Opens a regular file only: O_NOFOLLOW so a symlink planted under a session file name cannot aim this at config.json
-// or a .key file, O_NONBLOCK so a pipe returns an fd instead of waiting for a writer. The size comes from the fd, so
-// nothing can be swapped between the stat and the read. Callers already treat a throw as "skip this file".
+// openRead() opens a regular file only (O_NOFOLLOW, O_NONBLOCK, size from the fd); see read-file.mjs.
 // statOf() stays on fs.stat: it is also used on directories, and ~/.claude may legitimately be a symlink.
-async function openRead(file) {
-  const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | (fs.constants.O_NONBLOCK ?? 0));
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile()) throw Object.assign(new Error('Not a regular file.'), { code: 'EFTYPE' });
-    return { handle, stat };
-  } catch (error) { await handle.close().catch(() => {}); throw error; }
-}
 async function readHead(file, bytes) {
   const { handle } = await openRead(file);
   try {
@@ -147,16 +146,6 @@ async function readTail(file, bytes) {
     }
     return { text: buffer.subarray(0, total).toString('utf8'), truncated: start > 0 };
   } finally { await handle.close(); }
-}
-async function readRange(handle, start, length) {
-  const buffer = Buffer.alloc(length);
-  let total = 0;
-  while (total < length) {
-    const { bytesRead } = await handle.read(buffer, total, length - total, start + total);
-    if (!bytesRead) break;
-    total += bytesRead;
-  }
-  return buffer.subarray(0, total);
 }
 async function subdirs(dir) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -209,12 +198,12 @@ function newCache(homeDir) {
     unread: { sig: null, ids: new Set(), diffs: new Map() },
     worktrees: { sig: null, byLease: new Map() },
     desktop: { rootSig: null, accounts: new Map(), dirs: new Map() },
-    transcripts: { rootSig: null, slugs: new Map(), index: new Map(), tails: new Map(), prompts: new Map(), edits: new Map(), lastFull: 0 },
+    transcripts: { rootSig: null, slugs: new Map(), index: new Map(), tails: new Map(), prompts: new Map(), edits: new Map(), work: new Map(), lastFull: 0 },
     history: new Map(),
     helpers: new Map(),
   };
 }
-const emptyStats = () => ({ registryReads: 0, prefixReads: 0, fullParses: 0, tailReads: 0, promptReads: 0, editChecks: 0, editReads: 0, historyChecks: 0, historyLists: 0, transcriptStats: 0, helperStats: 0, unreadReads: 0, ms: 0, phases: {} });
+const emptyStats = () => ({ registryReads: 0, prefixReads: 0, fullParses: 0, tailReads: 0, promptReads: 0, editChecks: 0, editReads: 0, workChecks: 0, workReads: 0, workHelperChecks: 0, historyChecks: 0, historyLists: 0, transcriptStats: 0, helperStats: 0, unreadReads: 0, ms: 0, phases: {} });
 
 // ---- registry ----
 function waitingReason(value) {
@@ -533,7 +522,7 @@ async function scanTranscripts(cache, root, ctx, { needIds, windowMs }) {
   const { limits, nowMs, stats } = ctx;
   const state = cache.transcripts;
   const rootStat = await statOf(root);
-  if (!rootStat?.isDirectory()) { state.rootSig = null; state.slugs.clear(); state.index.clear(); state.tails.clear(); state.prompts.clear(); state.edits.clear(); return { exists: false }; }
+  if (!rootStat?.isDirectory()) { state.rootSig = null; state.slugs.clear(); state.index.clear(); state.tails.clear(); state.prompts.clear(); state.edits.clear(); state.work.clear(); return { exists: false }; }
   const rootSig = signature(rootStat);
   if (state.rootSig !== rootSig) {
     // Sealed folders are never listed, let alone read.
@@ -583,6 +572,7 @@ async function scanTranscripts(cache, root, ctx, { needIds, windowMs }) {
   for (const file of state.tails.keys()) if (!files.has(file)) state.tails.delete(file);
   for (const file of state.prompts.keys()) if (!files.has(file)) state.prompts.delete(file);
   for (const file of state.edits.keys()) if (!files.has(file)) state.edits.delete(file);
+  for (const file of state.work.keys()) if (!files.has(file)) state.work.delete(file);
   return { exists: true };
 }
 // The newest request from the person among complete lines, or null. Only user rows are parsed; tool results carry no text.
@@ -666,83 +656,68 @@ async function tailsFor(cache, entries, ctx) {
 }
 
 // ---- which files a session edited (paths only) ----
-// A file-history line names the file twice: `trackingPath`, which is sometimes relative to the folder the session
-// started in, and `backup.realParentDir`, which is always the real parent folder. Joining the parent with the name
-// gives one absolute path for both shapes and needs no working folder. Checked against this Mac's transcripts:
-// 21 of 21 paths built this way pointed at a file that is really there.
-function editPath(named, parent) {
-  if (typeof named !== 'string' || !named || named.length > 4096 || /[\u0000-\u001f]/.test(named)) return null;
-  const base = path.basename(named.split('\\').join('/'));
-  if (!base || base === '.' || base === '..' || secretName(base)) return null;
-  const dir = absPath(parent);
-  const full = dir ? path.join(dir, base) : absPath(named);
-  return full && !sealedPath(full) ? full : null;
-}
-/** The file names on the two file-history line types, oldest first. No other line is parsed and no other field is read. */
-function collectEdits(text, truncated, limits) {
+/** The file names on the two file-history line types, oldest first, each with the backupTime written next to it (when
+ *  the session last backed that file up, so when it last edited it). No other line is parsed and no other field is read. */
+function collectEdits(text, truncated, limits, owner, ownIds) {
   const lines = text.split('\n');
   if (truncated) lines.shift();
   const out = [];
   for (const line of lines) {
     if (line.charCodeAt(0) !== 123 || line.length > limits.editLineBytes) continue;
+    // Rows copied from another session (a fork) and the file-history lines among them are that session's (ownLine).
+    if (!ownLine(line, owner, ownIds)) continue;
+    if (owner.held.length) out.push(...releaseHeld(owner));
     const leading = LEADING_TYPE.exec(line.slice(0, 80));
     if (!leading || !EDIT_TYPES.has(leading[1])) continue;
     let row;
     try { row = JSON.parse(line); } catch { continue; }
-    if (!isObject(row)) continue;
-    if (row.type === 'file-history-delta') {
-      const found = editPath(row.trackingPath, row.backup?.realParentDir);
-      if (found) out.push(found);
-      continue;
-    }
-    const tracked = row.snapshot?.trackedFileBackups;
-    if (!isObject(tracked)) continue;
-    for (const [name, backup] of Object.entries(tracked).slice(0, limits.editPaths)) {
-      const found = editPath(name, backup?.realParentDir);
-      if (found) out.push(found);
-    }
+    out.push(...ownEdits(historyEdits(row, limits.editPaths), owner, ownIds));
   }
+  out.push(...releaseHeld(owner, { endOfPass: true }));
   return out;
 }
-// Newest wins its place in the list, so a file edited again moves to the end and the cap drops the oldest.
+// Newest wins its place in the list, so a file edited again moves to the end and the cap drops the oldest. Only a
+// delta line carries an edit time (historyEdits), and a path's time only ever moves forward.
 function addEdits(entry, found, max) {
-  for (const item of found) {
-    const at = entry.paths.indexOf(item);
-    if (at >= 0) entry.paths.splice(at, 1);
+  for (const { path: item, at } of found) {
+    const index = entry.paths.indexOf(item);
+    if (index >= 0) entry.paths.splice(index, 1);
     entry.paths.push(item);
+    if (at && at > (entry.times.get(item) ?? 0)) entry.times.set(item, at);
   }
-  if (entry.paths.length > max) entry.paths.splice(0, entry.paths.length - max);
+  if (entry.paths.length > max) for (const gone of entry.paths.splice(0, entry.paths.length - max)) entry.times.delete(gone);
 }
 // Reads only the bytes that arrived since the last pass: the offset and size are remembered per file, a file that has
 // not grown costs one open and one stat, and a growth larger than one read's worth starts again from the last
 // editBytes. Never more than editBytes is read at a time.
-async function readEdits(file, previous, limits) {
+async function readEdits(file, previous, limits, ownIds = null, owners = '') {
   const { handle, stat } = await openRead(file);
   try {
     const size = Number(stat.size);
     const mtimeMs = Number(stat.mtimeMs);
-    const same = Boolean(previous) && previous.dev === Number(stat.dev) && previous.ino === Number(stat.ino);
+    const same = Boolean(previous) && previous.dev === Number(stat.dev) && previous.ino === Number(stat.ino) && previous.owners === owners;
     if (same && previous.size === size && previous.mtimeMs === mtimeMs) return previous;
     const grew = same && size >= previous.consumed && size - previous.consumed <= limits.editBytes;
     const start = grew ? previous.consumed : Math.max(0, size - Math.min(limits.editBytes, size));
     const buffer = await readRange(handle, start, size - start);
     const entry = grew
-      ? { ...previous, size, mtimeMs, paths: previous.paths }
-      : { dev: Number(stat.dev), ino: Number(stat.ino), size, mtimeMs, consumed: start, aligned: start === 0, paths: [] };
+      ? { ...previous, size, mtimeMs, paths: previous.paths, times: previous.times }
+      : { dev: Number(stat.dev), ino: Number(stat.ino), size, mtimeMs, consumed: start, aligned: start === 0, paths: [], times: new Map(), owner: ownerState(), owners };
     // A read that starts mid-line drops that line; the next pass starts at the newline this one ended on.
     const partial = grew ? !previous.aligned : start > 0;
     const end = buffer.lastIndexOf(10) + 1;
     if (end > 0) {
       const text = buffer.subarray(0, end).toString('utf8');
-      addEdits(entry, collectEdits(text, partial, limits), limits.editPaths);
+      addEdits(entry, collectEdits(text, partial, limits, entry.owner, ownIds), limits.editPaths);
       entry.consumed = start + end;
       entry.aligned = true;
     }
     return entry;
   } finally { await handle.close().catch(() => {}); }
 }
-/** Session id to the files it edited, newest first. Each transcript is read forward from where the last pass stopped. */
-async function editsFor(cache, entries, ctx) {
+/** Session id to the files it edited, newest first, with each one's last-edited time in the same order (null when the
+ *  line had none). Each transcript is read forward from where the last pass stopped. */
+async function editsFor(cache, entries, ctx, ownersOf = new Map()) {
   const { limits, stats } = ctx;
   const out = new Map();
   const state = cache.transcripts.edits;
@@ -750,13 +725,126 @@ async function editsFor(cache, entries, ctx) {
   await pool(batch, limits.concurrency, async entry => {
     try {
       const previous = state.get(entry.file);
-      const next = await readEdits(entry.file, previous, limits);
+      const ownIds = ownersOf.get(entry.id) ?? new Set([entry.id]);
+      const next = await readEdits(entry.file, previous, limits, ownIds, ownersKey(ownIds));
       stats.editChecks++;
       if (next !== previous) stats.editReads++;
       state.set(entry.file, next);
-      if (next.paths.length) out.set(entry.id, [...next.paths].reverse());
+      if (next.paths.length) {
+        const paths = [...next.paths].reverse();
+        out.set(entry.id, { paths, times: paths.map(item => next.times.get(item) ?? null) });
+      }
     } catch { /* vanished or unreadable; retried on the next change */ }
   });
+  return out;
+}
+// ---- what a session did (work-log.mjs) ----
+// The ids whose rows count as a transcript's own, as one comparable key: a change (a desktop session gaining an earlier
+// id) starts that transcript's passes over.
+const ownersKey = ids => [...ids].sort().join(',');
+// A session's sub-agent transcripts, <session>/subagents/**/agent-*.jsonl at most two folders down, the newest `max`.
+// Every name is listed (up to `scan`) before any is picked: readdir order is not time order, so stopping early kept 30
+// of the true newest 40 in a 281-file session on this Mac. A folder or file that is a symlink is never followed (lstat,
+// and openRead's O_NOFOLLOW for the files themselves).
+async function helperFiles(dir, max, scan = max) {
+  const found = [];
+  const walk = async (folder, depth) => {
+    const info = await lstatOf(folder);
+    if (!info?.isDirectory() || found.length >= scan) return;
+    let items = [];
+    try { items = await fs.readdir(folder, { withFileTypes: true }); } catch { return; }
+    for (const item of items) {
+      if (item.isFile() && HELPER_FILE.test(item.name)) found.push(path.join(folder, item.name));
+      else if (item.isDirectory() && depth < 2 && !item.name.startsWith('.')) await walk(path.join(folder, item.name), depth + 1);
+      if (found.length >= scan) break;
+    }
+  };
+  await walk(dir, 0);
+  const dated = [];
+  await pool(found, 16, async file => { const mtime = Number((await lstatOf(file))?.mtimeMs ?? 0); if (mtime > 0) dated.push([file, mtime]); });
+  return dated.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).slice(0, max).map(([file]) => file);
+}
+// Whether any of a session's sub-agent transcripts was written after its last helper pass began. A session in the middle
+// of an Agent or Workflow call leaves its own transcript alone while its sub-agents write, so its own signature says
+// nothing; the helper count's stats (countHelpers, taken on the previous read for every working session, and only for
+// files written in the last minute and a half between its full passes) do, at no extra cost here.
+function helpersMoved(cache, id, record) {
+  const known = cache.helpers.get(id);
+  if (!known || !Number.isFinite(record?.helpersAt)) return false;
+  for (const mtime of known.mtimes.values()) if (mtime >= record.helpersAt) return true;
+  return false;
+}
+/** Session id to { log, forked, pending }: its work log, merged with its sub-agents' (the main transcript misses the
+ *  edits, test runs and commits an Agent or Workflow call made), whether its transcript began with another session's
+ *  rows, and whether that log is still behind its files (never read yet, stopped short, or grown since and left for a
+ *  later read). The index's own stat decides whether a transcript is opened at all, so a session that has not grown,
+ *  and whose sub-agents were all read to the end and have not been written since, costs nothing more; one that has is
+ *  read forward from where its last pass stopped. A pass that stopped short of the end (a large growth, an over-long
+ *  line), or files left for later because this read ran out of time, are picked up by the next read even if nothing
+ *  changes. */
+async function workLogsFor(cache, entries, ctx, ownersOf = new Map()) {
+  const { limits, stats } = ctx;
+  const out = new Map();
+  const state = cache.transcripts.work;
+  const workLimits = { firstBytes: limits.workFirstBytes, passBytes: limits.workBytes, lineBytes: limits.workLineBytes, pending: limits.workPending, git: limits.workGit, tests: limits.workTests, edited: limits.editPaths };
+  const begun = performance.now();
+  const late = () => performance.now() - begun > limits.workMs || (Number.isFinite(ctx.started) && performance.now() - ctx.started > limits.workDeadlineMs);
+  const resultOf = record => ({
+    log: mergeWorkLogs(workLogOf(record.state), [...(record.helpers?.values() ?? [])].map(item => workLogOf(item.state)), workLimits),
+    forked: record.state.owner?.seen === 'own' && record.state.owner.forked === true,
+    pending: false,
+  });
+  const batch = [];
+  // Files this read could not open at all: nothing is on its way for them, so they are not reported as still being read.
+  const unreadable = new Set();
+  for (const entry of entries) {
+    const ownIds = ownersOf.get(entry.id) ?? new Set([entry.id]);
+    const key = ownersKey(ownIds);
+    const previous = state.get(entry.file);
+    const kept = previous?.owners === key ? previous : null;
+    const current = kept && kept.sig === entry.sig && kept.helpersDone && !helpersMoved(cache, entry.id, kept);
+    if (current || batch.length >= limits.workReads) { if (kept) out.set(entry.id, resultOf(kept)); continue; }
+    batch.push({ entry, ownIds, key, kept });
+  }
+  await pool(batch, Math.max(1, Math.floor(limits.workConcurrency)), async ({ entry, ownIds, key, kept }) => {
+    if (late()) { if (kept) out.set(entry.id, resultOf(kept)); return; }
+    try {
+      const next = await readWorkLog(entry.file, kept, { limits: workLimits, homeDir: cache.homeDir, ownIds });
+      stats.workChecks++;
+      if (next !== kept) stats.workReads++;
+      // Sub-agents: each file its own forward pass, with sub-agent rows allowed and no question read from them. The
+      // wall-clock start of this pass is kept, since helpersMoved compares it with the files' own times.
+      const helpers = new Map();
+      let helpersDone = true;
+      let helpersAt = kept?.helpersAt ?? null;
+      if (limits.workHelpers > 0) {
+        helpersAt = Date.now();
+        for (const file of await helperFiles(path.join(entry.dir, entry.id, 'subagents'), limits.workHelpers, Math.max(limits.workHelpers, limits.workHelperScan ?? 0))) {
+          const before = kept?.helpers?.get(file) ?? null;
+          if (late()) { if (before) helpers.set(file, before); helpersDone = false; continue; }
+          try {
+            const read = await readWorkLog(file, before, { limits: workLimits, homeDir: cache.homeDir, sidechain: true });
+            stats.workHelperChecks++;
+            helpers.set(file, read);
+            if (!read.caughtUp) helpersDone = false;
+          } catch { /* vanished or unreadable; retried on the next change */ }
+        }
+      }
+      // The index signature is kept only when this pass reached the end of the file, so a pass that stopped short is
+      // never mistaken for one that read everything.
+      const record = { ...next, sig: next.caughtUp ? entry.sig : null, owners: key, helpers, helpersDone, helpersAt };
+      state.set(entry.file, record);
+      out.set(entry.id, resultOf(record));
+    } catch { state.delete(entry.file); unreadable.add(entry.file); /* vanished or unreadable; retried on the next change */ }
+  });
+  // A log still behind its files says so, so "no commits, nothing uncommitted" is never read into one not read yet.
+  for (const entry of entries) {
+    if (unreadable.has(entry.file)) continue;
+    const record = state.get(entry.file);
+    if (record?.owners === ownersKey(ownersOf.get(entry.id) ?? new Set([entry.id])) && record.sig === entry.sig && record.helpersDone) continue;
+    const found = out.get(entry.id);
+    if (found) found.pending = true; else out.set(entry.id, { log: null, forked: false, pending: true });
+  }
   return out;
 }
 // ---- which files a session has backed up (entry names only) ----
@@ -914,6 +1002,13 @@ function session(fields) {
     confidence: fields.confidence || 'reported', helpers: fields.helpers || 0, model: fields.model ?? null, work: fields.work ?? null,
     // Files this session edited, newest first, from transcript metadata only.
     touchedPaths: Array.isArray(fields.touchedPaths) && fields.touchedPaths.length ? fields.touchedPaths : null,
+    // When each of those files was last backed up, in the same order; present only alongside the paths.
+    ...(Array.isArray(fields.touchedPaths) && fields.touchedPaths.length && Array.isArray(fields.touchedTimes) ? { touchedTimes: fields.touchedTimes } : {}),
+    // What the session did, read from its own transcript (work-log.mjs): git actions, test counts, an open question.
+    ...(fields.workLog ? { workLog: fields.workLog } : {}),
+    // That log is still behind the transcript (not read yet, or grown and left for a later read), so its silence is no
+    // answer yet.
+    ...(fields.workLogPending === true ? { workLogPending: true } : {}),
     // The same question asked the other way round: the hashed names of the files this session has backed up, how many
     // distinct files that is, and when the newest was written. Hashes only, so no path is discovered here.
     touchedHashes: Array.isArray(fields.touchedHashes) && fields.touchedHashes.length ? fields.touchedHashes : null,
@@ -932,7 +1027,7 @@ async function scan(cache, options, stats) {
   const limits = limitsOf(options.limits);
   const recentMs = Number.isFinite(options.recentMs) && options.recentMs >= 0 ? options.recentMs : 7 * DAY;
   const horizon = nowMs - recentMs;
-  const ctx = { nowMs, limits, stats };
+  const ctx = { nowMs, limits, stats, started };
   const warnings = new Set();
   const where = pathsFor(cache.homeDir);
   // Per CLI session id: what that session reported about itself through hooks (empty when hooks are off).
@@ -1074,10 +1169,29 @@ async function scan(cache, options, stats) {
   // Which files each session it is about to show has edited. Live sessions first, then the most recently written
   // transcripts, so a busy Mac spends the read budget where the answer changes.
   const editIds = new Set([...terminalCandidates.map(item => item.id), ...terminalLive.keys()]);
-  for (const { reg, entry } of interesting) { const cli = reg?.sessionId ?? cliOf(entry); if (cli) editIds.add(cli); }
+  // Whose rows count as each transcript's own: its own id, and for a desktop session the ids it had before, whose rows
+  // a resumed transcript may carry. Any other id's rows were copied from another session (a fork) and are skipped.
+  const ownersOf = new Map();
+  for (const { reg, entry } of interesting) {
+    const cli = reg?.sessionId ?? cliOf(entry);
+    if (!cli) continue;
+    editIds.add(cli);
+    ownersOf.set(cli, new Set([cli, cliOf(entry), ...(entry.full?.priorCliSessionIds ?? [])].filter(Boolean)));
+  }
   const editEntries = [...editIds].map(id => index.get(id)).filter(Boolean)
     .sort((a, b) => Number(needIds.has(b.id)) - Number(needIds.has(a.id)) || b.mtimeMs - a.mtimeMs);
-  const edits = await editsFor(cache, editEntries, ctx);
+  const edits = await editsFor(cache, editEntries, ctx, ownersOf);
+  // What each of those sessions did, from the same transcripts and their sub-agents', read forward from where the last
+  // pass stopped. A transcript found to begin with another session's rows keeps only the edited paths its own part
+  // named: the edit pass's short tail cannot see where the copied rows end.
+  const workLogs = await workLogsFor(cache, editEntries, ctx, ownersOf);
+  for (const [id, work] of workLogs) {
+    const found = edits.get(id);
+    if (!work.forked || !found) continue;
+    const own = new Set((work.log?.edited ?? []).map(item => item.path));
+    const keep = found.paths.map((item, at) => [item, found.times[at]]).filter(([item]) => own.has(item));
+    if (keep.length) edits.set(id, { paths: keep.map(([item]) => item), times: keep.map(([, at]) => at) }); else edits.delete(id);
+  }
   // How many files each of those sessions has backed up, and when it last did, from the names in its own file-history
   // folder. A session with no folder there says nothing rather than reporting zero.
   const historyIds = [...editEntries.map(item => item.id), ...[...editIds].filter(id => !index.has(id))];
@@ -1137,7 +1251,7 @@ async function scan(cache, options, stats) {
       activity: state.activity, activitySince: since, reason: state.reason,
       unread: isUnread, archived, pinned: full?.pinned, live, confidence, helpers, model: full?.model, work: unread.diffs.get(entry.id)?.work ?? null,
       origin: hook?.launch ? 'summon' : null,
-      titleSource: full?.titleSource, touchedPaths: cli ? edits.get(cli) : null,
+      titleSource: full?.titleSource, touchedPaths: cli ? edits.get(cli)?.paths : null, touchedTimes: cli ? edits.get(cli)?.times : null, workLog: cli ? workLogs.get(cli)?.log : null, workLogPending: cli ? workLogs.get(cli)?.pending : false,
       touchedHashes: cli ? history.get(cli)?.hashes : null, touchedFiles: cli ? history.get(cli)?.files : null, touchedAt: cli ? history.get(cli)?.at : null,
     });
     if (privateSession(item) || sealedPath(full?.originCwd)) continue;
@@ -1178,7 +1292,7 @@ async function scan(cache, options, stats) {
       cwd: reg.cwd ?? tail?.cwd, branch: tail?.branch, startedAt: reg.startedAt ?? (indexed ? time(indexed.birthtimeMs) : null),
       updatedAt: tail?.updatedAt ?? reg.statusUpdatedAt ?? reg.updatedAt ?? reg.startedAt,
       activity: state.activity, activitySince: since, reason: state.reason, live: true, confidence, helpers, model: tail?.model,
-      touchedPaths: edits.get(id),
+      touchedPaths: edits.get(id)?.paths, touchedTimes: edits.get(id)?.times, workLog: workLogs.get(id)?.log, workLogPending: workLogs.get(id)?.pending,
       touchedHashes: history.get(id)?.hashes, touchedFiles: history.get(id)?.files, touchedAt: history.get(id)?.at,
     });
     if (privateSession(item)) continue;
@@ -1195,7 +1309,7 @@ async function scan(cache, options, stats) {
       surface: 'terminal', id: item.id, title: tail.title, recentContext: tail.recentContext, titleSource: tail.titleSource, cwd: tail.cwd, branch: tail.branch, origin: hookFor(item.id)?.launch ? 'summon' : null,
       startedAt: time(item.birthtimeMs), updatedAt: tail.updatedAt,
       activity: 'quiet', activitySince: tail.updatedAt, live: false, confidence: 'reported', model: tail.model,
-      touchedPaths: edits.get(item.id),
+      touchedPaths: edits.get(item.id)?.paths, touchedTimes: edits.get(item.id)?.times, workLog: workLogs.get(item.id)?.log, workLogPending: workLogs.get(item.id)?.pending,
       touchedHashes: history.get(item.id)?.hashes, touchedFiles: history.get(item.id)?.files, touchedAt: history.get(item.id)?.at,
     });
     if (privateSession(row)) continue;

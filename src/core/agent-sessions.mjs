@@ -5,6 +5,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { classifyPath, hidePrivateText, sealedPath, redact } from './workstreams.mjs';
 import { createHookLedger } from './hook-events.mjs';
 import { recentContext, CONTEXT_CHARS } from './sessions/recent-context.mjs';
+import { gitRunner } from './git-scan.mjs';
+import { createSessionFacts, factsForAgent, factsText } from './session-facts.mjs';
 
 const VERSION = 1;
 const APPS = Object.freeze(['claude', 'codex', 'cursor', 'hermes']);
@@ -17,7 +19,13 @@ const PLACE_GROUPS = new Set(['needs-you', 'new', 'working', 'open']);
 const OWN_FOLDER_KINDS = new Set(['claude', 'codex', 'cursor']);
 const READINESS_WORDS = Object.freeze({ ready: 'looks ready to save', 'in-progress': 'still in progress', scratch: 'scratch work', generated: 'made by a script' });
 const WORK_TEXT_CHARS = 90;
-const LIMITS = { touchedPaths: 200, touchedHashes: 400, hashFiles: 4000, hashPlaces: 200, headlineChars: 120, workstreams: 16, streamFiles: 4000, budgetMs: 4000, processesMs: 1000, processesTtlMs: 30000, lateResultMs: 10000, staleResultMs: 120000, closeWaitMs: 1500, stateBytes: 262144, aliases: 50, pathChars: 1024, perApp: 300, idChars: 200, titleChars: 120, agentSessions: 60, pathTtlMs: 60000, realpathMs: 1000, pathCache: 4000, places: 2000, projects: 2000, warnings: 12, resolveConcurrency: 16, placeCountsMaxAgeMs: 180000 };
+const LIMITS = { touchedPaths: 200, touchedHashes: 400, hashFiles: 4000, hashPlaces: 200, headlineChars: 120, workstreams: 16, streamFiles: 4000, budgetMs: 4000, processesMs: 1000, processesTtlMs: 30000, lateResultMs: 10000, staleResultMs: 120000, closeWaitMs: 1500, stateBytes: 262144, aliases: 50, pathChars: 1024, perApp: 300, idChars: 200, titleChars: 120, agentSessions: 60, pathTtlMs: 60000, realpathMs: 1000, pathCache: 4000, places: 2000, projects: 2000, warnings: 12, resolveConcurrency: 16, placeCountsMaxAgeMs: 180000,
+  // Session facts (session-facts.mjs): what a reader's work log may carry, the uncommitted names kept per folder, and
+  // each read-only git call's time and output caps.
+  workGit: 50, workTests: 20, uncommittedFiles: 2000, factGitMs: 3000, factGitBytes: 1024 * 1024, factGitConcurrency: 4,
+  // The facts join waits at most factsMs, and never past what is left of budgetMs (at least factsMinMs, which a join
+  // answered from its cache needs); a slower one finishes in the background and the previous facts stand in.
+  factsMs: 1500, factsMinMs: 50 };
 const DEFAULT_SETTINGS = { recentHours: 24, newReplyHours: 72, showQuiet: true, showBackground: false, trayCount: 'needs', pathAliases: {} };
 // What the menu bar counts: 'needs' shows an item while sessions need you or something is working, 'working' also
 // counts background runs the list leaves out, 'off' means no item and no background check at all.
@@ -34,6 +42,11 @@ const HERMES_ID = /^\d{8}_\d{6}_[0-9a-f]{6}$/;
 // How Claude names a file-history entry, and how a path we already have is turned into the same name. The hash is one
 // way: it can be compared with a path we already know, and it can never be turned back into a path we do not.
 const HASH16 = /^[0-9a-f]{16}$/;
+// What a work log may say (sessions/work-log.mjs), checked again here because it crosses from a reader.
+const GIT_KINDS = new Set(['commit', 'push', 'branch', 'pr']);
+const TEST_RUNNERS = new Set(['node', 'tap', 'pytest', 'jest', 'vitest', 'cargo', 'go']);
+const SHA = /^[0-9a-f]{7,64}$/;
+const ACTION = /^[a-z][a-z-]{0,23}$/;
 const GONE = 'That session is no longer in the list.';
 const CANNOT_OPEN = 'Summon cannot open this session.';
 const STILL_CHECKING = 'Still checking.';
@@ -217,11 +230,44 @@ function sessionChildren(raw, app, parentSessionKey) {
     endedAt: childTime(child.endedAt) === null ? null : iso(childTime(child.endedAt)),
   }));
 }
+/** A reader's work log, strictly typed and bounded: git actions, test counts, an open question and when the person
+ *  last wrote. Folders are full paths outside sealed folders; everything else is a number, a short word or a SHA. */
+function sanitizeWorkLog(raw) {
+  if (!isObject(raw)) return null;
+  // An item from a sealed folder is dropped whole, not kept with its folder blanked: a folder-less commit would be
+  // credited to the session's own repository. Only a folder that was missing or malformed becomes null.
+  const unsealed = item => !(typeof item.folder === 'string' && sealedPath(item.folder));
+  const folder = value => folderPath(value);
+  const git = listOf(raw.git).slice(0, LIMITS.workGit).filter(item => isObject(item) && GIT_KINDS.has(item.kind) && epoch(item.at) !== null && unsealed(item)).map(item => {
+    const quiet = item.kind === 'commit' && item.quiet === true;
+    return {
+      kind: item.kind, at: epoch(item.at), folder: folder(item.folder),
+      sha: item.kind === 'commit' && !quiet && typeof item.sha === 'string' && SHA.test(item.sha) ? item.sha : null,
+      branch: clean(item.branch, 200) || null, action: typeof item.action === 'string' && ACTION.test(item.action) ? item.action : null,
+      number: whole(item.number), quiet, from: quiet ? epoch(item.from) : null,
+    };
+  // A commit is either named by its SHA or, when the call left no annotation, known by its folder and time window.
+  }).filter(item => item.kind !== 'commit' || item.sha || (item.quiet && item.folder && item.from !== null && item.from <= item.at));
+  // Counts are whole numbers, or both null for a run that printed failures without a summary.
+  const counts = item => (whole(item.passed) !== null && whole(item.failed) !== null) || (item.passed === null && item.failed === null);
+  const tests = listOf(raw.tests).slice(0, LIMITS.workTests)
+    .filter(item => isObject(item) && TEST_RUNNERS.has(item.runner) && counts(item) && epoch(item.at) !== null && unsealed(item))
+    .map(item => ({ runner: item.runner, passed: item.passed, failed: item.failed, at: epoch(item.at), folder: folder(item.folder) }));
+  // Files the session edited in the work log's wider window, with when it last backed each one up. Paths only.
+  const edited = listOf(raw.edited).slice(0, LIMITS.touchedPaths).filter(item => isObject(item) && absolute(item.path) && !sealedPath(item.path))
+    .map(item => ({ path: item.path, at: epoch(item.at) }));
+  const asked = isObject(raw.asked) && epoch(raw.asked.at) !== null ? { at: epoch(raw.asked.at) } : null;
+  const lastUserAt = epoch(raw.lastUserAt);
+  return git.length || tests.length || edited.length || asked || lastUserAt ? { git, tests, edited, asked, lastUserAt } : null;
+}
 function sanitizeSession(raw, app) {
   if (!isObject(raw) || raw.app !== app || !SURFACES.includes(raw.surface)) return null;
   if (typeof raw.id !== 'string' || !raw.id || raw.id.length > LIMITS.idChars || /[\u0000-\u0020\u007f-\u009f]/.test(raw.id)) return null;
   const pathOrNull = value => folderPath(value);
   const reason = clean(raw.reason, 120) || null;
+  // Paths and their last-edited times travel as pairs, so dropping a bad path never shifts a time onto another file.
+  const times = listOf(raw.touchedTimes);
+  const touched = listOf(raw.touchedPaths).map((value, at) => [value, epoch(times[at])]).filter(([value]) => absolute(value)).slice(0, LIMITS.touchedPaths);
   return {
     app, surface: raw.surface, id: raw.id, title: clean(raw.title, LIMITS.titleChars) || null,
     // Only the Claude reader can join a desktop local_ id to its CLI hook id. Never derive it from a display key.
@@ -237,7 +283,9 @@ function sanitizeSession(raw, app) {
     // Only 'user' is a claim; everything else, including a reader that says nothing, counts as the app's own wording.
     titleSource: raw.titleSource === 'user' ? 'user' : 'auto',
     // Full paths of the files this session edited, newest first. Names only: no reader ever sends their contents.
-    touchedPaths: listOf(raw.touchedPaths).filter(absolute).slice(0, LIMITS.touchedPaths),
+    touchedPaths: touched.map(([value]) => value),
+    // When each of those files was last edited, in the same order; null where the reader had no time (every Codex path).
+    touchedTimes: touched.map(([, at]) => at),
     // The same files as hashes of their paths, plus how many distinct ones there are and when the newest was written.
     // A hash only ever answers "is this one of the files we already have?"; it names nothing on its own.
     touchedHashes: listOf(raw.touchedHashes).filter(value => typeof value === 'string' && HASH16.test(value)).slice(0, LIMITS.touchedHashes),
@@ -245,6 +293,10 @@ function sanitizeSession(raw, app) {
     touchedAt: epoch(raw.touchedAt),
     // Summon's own fact, not app text: the reader saw the launch tag Summon wrote when it started this session.
     origin: raw.origin === 'summon' ? 'summon' : null,
+    // What the session did, from its own transcript: git actions, test counts, an open question (session-facts.mjs).
+    workLog: sanitizeWorkLog(raw.workLog),
+    // The reader has not yet read that log to the end of the transcript, so what it leaves out is not known yet.
+    workLogPending: raw.workLogPending === true,
   };
 }
 
@@ -520,13 +572,23 @@ async function pool(items, size, fn) {
 
 /** Agent sessions: read-only metadata about Claude, Codex, Cursor and Hermes sessions. Never reads conversation content, never writes to those apps. */
 export async function createAgentSessions({
-  dataDir, homeDir = os.homedir(), run, now = () => Date.now(), getPlaces = async () => [], getProjects = async () => [],
-  readers, privatePathsFor = () => [], listProcesses, snapshots, readLocalStorageKeys, limits = {},
+  dataDir, homeDir = os.homedir(), run, git = '/usr/bin/git', env, now = () => Date.now(), getPlaces = async () => [], getProjects = async () => [],
+  readers, privatePathsFor = () => [], listProcesses, snapshots, readLocalStorageKeys, limits = {}, gitCall,
 } = {}) {
   if (!absolute(dataDir)) throw new Error('Agent sessions need a full data folder path.');
   const limit = { ...LIMITS, ...limits };
   await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
   dataDir = await fs.realpath(dataDir);
+  // Session facts join each session's work log with its repository through the read-only git runner (gitArgs, GIT_ENV,
+  // no fetch). Tests hand in gitCall; without a runner the facts still say what needs no git at all.
+  let factGit = typeof gitCall === 'function' ? gitCall : null;
+  if (!factGit && typeof run === 'function' && absolute(git)) {
+    try { factGit = gitRunner({ run, git, env: env || { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: homeDir } }, { timeout: limit.factGitMs, maxBytes: limit.factGitBytes, concurrency: limit.factGitConcurrency }); } catch { factGit = null; }
+  }
+  const sessionFacts = createSessionFacts({ git: factGit, now });
+  // The facts join still running, if any, and the answers of the last one that finished (see attachFacts).
+  let factsRun = null;
+  let lastFacts = new Map();
   // Hook events: what sessions report about themselves (see hook-events.mjs). Without the ledger everything else still reads.
   let hooks = null;
   let hooksProblem = null;
@@ -740,7 +802,11 @@ export async function createAgentSessions({
             title: clean(stream.title, 80),
             readiness: typeof stream.readiness === 'string' ? stream.readiness : null,
             files: new Set(listOf(stream.files).filter(file => typeof file === 'string' && file && !file.startsWith('/')).slice(0, LIMITS.streamFiles)),
-          })) }));
+          })),
+        // The folder's uncommitted files ('new/' for an untracked folder), folder-relative, for the session facts.
+        uncommitted: place.missing === true ? [] : listOf(place.uncommitted).filter(file => typeof file === 'string' && file && file.length <= 1024 && !file.startsWith('/')).slice(0, LIMITS.uncommittedFiles),
+        // The ones Work in flight itself withholds from agents (a rename out of a private path, a private new folder).
+        withheld: new Set(listOf(place.withheld).filter(file => typeof file === 'string' && file && file.length <= 1024).slice(0, LIMITS.uncommittedFiles)) }));
     await pool(places, limit.resolveConcurrency, async place => { place.real = (await realInfo(place.path)).real; });
     return places.filter(place => !sealedPath(place.real));
   }
@@ -896,6 +962,8 @@ export async function createAgentSessions({
       const warnings = [];
       let timer;
       const late = Symbol('late');
+      // Real elapsed time, for the facts join's share of what is left of the budget (the injected clock may be a test's).
+      const started = performance.now();
       const deadline = new Promise(resolve => { timer = setTimeout(resolve, limit.budgetMs, late); });
       try {
         // Injected readers (tests) get only the injected tools; nothing else is loaded.
@@ -931,7 +999,7 @@ export async function createAgentSessions({
         }));
         const seen = { key: null };
         const [places, projects] = await Promise.all([loadPlaces(warnings, seen), loadProjects(warnings)]);
-        const snapshot = await assemble({ outcomes, settings, places, projects, warnings });
+        const snapshot = await assemble({ outcomes, settings, places, projects, warnings, started });
         snapshot.ticket = ticket;
         snapshot.gen = gen;
         snapshot.placesKey = seen.key;
@@ -943,7 +1011,7 @@ export async function createAgentSessions({
     try { return await task; } finally { if (collecting === task) collecting = null; }
   }
 
-  async function assemble({ outcomes, settings, places, projects, warnings }) {
+  async function assemble({ outcomes, settings, places, projects, warnings, started = performance.now() }) {
     const nowMs = now();
     const recentMs = settings.recentHours * HOUR;
     // How fresh an unread mark has to be to count as a new reply; the apps never clear their own.
@@ -963,6 +1031,8 @@ export async function createAgentSessions({
         if (!sources.some(item => item.label === source.label)) sources.push(source);
       }
       if (!late) for (const item of listOf(result?.warnings)) { const text = clean(item, 300); if (text) warnings.push(text); }
+      // A reader still on its first read has nothing to show yet; say so, so an empty group is not taken as fact.
+      if (late && !result) warnings.push(`${APP_NAMES[app]} sessions are still being read. They will show on the next check.`);
       const sessions = listOf(result?.sessions).map(item => sanitizeSession(item, app)).filter(Boolean).slice(0, limit.perApp);
       for (const session of sessions) {
         if (session.archived && !session.live) continue;
@@ -1017,6 +1087,11 @@ export async function createAgentSessions({
       record.target = targetFor(record.session, record.folder);
       record.words = wordsFor(record.session, record.group, nowMs);
     }
+    await attachFacts(kept, places, settings, started);
+    // Right after launch the reader fills the work logs in over its first reads; until then an empty facts line would
+    // read as "no commits, nothing uncommitted", so those sessions carry factsPending and the view says how many.
+    const pendingFacts = kept.filter(record => record.session.workLogPending).length;
+    if (pendingFacts) warnings.push(`Session facts are still being read for ${pendingFacts === 1 ? '1 session' : `${pendingFacts} sessions`}.`);
     // Sessions in one project that landed on the same piece of work keep that piece of work and say which is which.
     const sharing = new Map();
     for (const record of kept) {
@@ -1054,10 +1129,66 @@ export async function createAgentSessions({
       totals: { needsYou: size('needs-you'), newReplies: size('new'), working: size('working'), open: size('open') },
       targets: new Map(kept.map(record => [record.key, record.target])),
       traceTargets: new Map(kept.map(record => [record.key, { app: record.session.app, id: record.session.hookSessionId }])),
+      byKey: new Map(kept.map(record => [record.key, record])),
     };
   }
 
-  function publicSession(record, group, forAgent, includeContext) {
+  // What each listed session did, joined with its repository (session-facts.mjs). The git budget goes to the sessions
+  // that matter most right now: needs you, new replies and working first, then the most recently active. The join is
+  // raced against what is left of this read's budget: session-facts stops starting git calls after its own budget, but
+  // a call already running can take up to factGitMs, so a slow repository would otherwise hold up every read. A join
+  // that loses keeps running (one at a time), its answers land in the cache and in lastFacts, and this read shows the
+  // facts of the last join that finished.
+  async function attachFacts(kept, places, settings, started = performance.now()) {
+    const alias = value => (typeof value === 'string' ? applyAliases(value, settings.pathAliases) : value);
+    const order = record => GROUP_ORDER.indexOf(record.group);
+    const ranked = [...kept].sort((a, b) => order(a) - order(b) || (b.session.updatedAt ?? 0) - (a.session.updatedAt ?? 0) || a.key.localeCompare(b.key));
+    const log = record => {
+      const raw = record.session.workLog;
+      if (!raw) return null;
+      return { ...raw, git: raw.git.map(item => ({ ...item, folder: alias(item.folder) })), tests: raw.tests.map(item => ({ ...item, folder: alias(item.folder) })), edited: raw.edited.map(item => ({ ...item, path: alias(item.path) })) };
+    };
+    const sessions = ranked.map(record => ({
+      key: record.key, placeId: record.placeId, roots: [record.folder.real, record.folder.lexical].filter(Boolean),
+      touchedPaths: record.session.touchedPaths.map(alias), touchedTimes: record.session.touchedTimes, workLog: log(record),
+    }));
+    const folders = places.filter(place => !place.missing).map(place => ({ id: place.id, cwd: place.real, roots: [place.real, place.path].filter(Boolean), uncommitted: place.uncommitted }));
+    if (!factsRun) {
+      const run = sessionFacts.compute({ sessions, places: folders }).then(result => { lastFacts = result; return result; }, () => lastFacts)
+        .finally(() => { if (factsRun === run) factsRun = null; });
+      factsRun = run;
+    }
+    const waitMs = Math.max(limit.factsMinMs, Math.min(limit.factsMs, limit.budgetMs - (performance.now() - started)));
+    const late = Symbol('late');
+    let timer;
+    const result = await Promise.race([factsRun, new Promise(resolve => { timer = setTimeout(resolve, waitMs, late); })]).finally(() => clearTimeout(timer));
+    const found = result === late || !(result instanceof Map) ? lastFacts : result;
+    const byId = new Map(places.map(place => [place.id, place]));
+    for (const record of kept) {
+      record.facts = found.get(record.key) ?? null;
+      // The uncommitted names are relative to the folder that holds them, which is filtered with that repository's own
+      // private folders, the same way joinPlace() picks the repository path for the session's own folder.
+      const held = record.facts?.uncommitted ? byId.get(record.facts.uncommitted.placeId) : null;
+      const main = held ? places.find(place => place.repoId && place.repoId === held.repoId && place.kind === 'main') : null;
+      record.factsRepoPath = held ? main?.real || held.real : record.repoPath;
+      record.factsWithheld = held?.withheld ?? null;
+    }
+  }
+
+  // A repository-relative name an agent may see: the private-path and secret-name checks Work in flight uses, never
+  // a sealed segment, and nothing the token and email masks would change.
+  // `withheld` is what Work in flight withholds in that folder, including what only its scan knows; a name inside a
+  // withheld untracked folder is withheld too.
+  function nameAllowed(rel, repoPath, withheld = null) {
+    if (typeof rel !== 'string' || !rel || sealedPath(rel) || clean(rel, 1024) !== rel || redact(rel) !== rel) return false;
+    if (withheld instanceof Set && withheld.size) {
+      if (withheld.has(rel)) return false;
+      for (let at = rel.indexOf('/'); at > 0; at = rel.indexOf('/', at + 1)) if (withheld.has(rel.slice(0, at + 1))) return false;
+    }
+    try { const cls = classifyPath(rel, { privatePaths: prefixesFor(repoPath) }); return !cls.private && !cls.secret; } catch { return false; }
+  }
+
+  function publicSession(record, group, forAgent, includeContext, titleOf = () => null) {
     const { session, words, target } = record;
     const masking = forAgent || includeContext ? maskingFor(record) : null;
     let title = session.title;
@@ -1095,7 +1226,27 @@ export async function createAgentSessions({
       // A session in a private folder says nothing about its work to an agent, counts included.
       work: work ? { ...work } : null, workText: workTextFor(work, forAgent && masking.hidden ? '' : record.touchedText),
       openable: target ? target.kind === 'url' ? 'link' : target.kind : 'none', openHint: target ? target.hint : 'Cannot be opened from Summon',
+      // Observed metadata about what the session did (session-facts.mjs). An agent gets short SHAs, counts and up to
+      // five filtered names; a session in a private folder gives an agent counts only.
+      ...factsFor(record, forAgent, masking, titleOf),
+      // The work log behind those facts is still being read, so a missing part is not yet an answer.
+      ...(session.workLogPending ? { factsPending: true } : {}),
     };
+  }
+
+  function factsFor(record, forAgent, masking, titleOf) {
+    const facts = record.facts;
+    if (!facts) return { facts: null, factsText: '' };
+    if (forAgent) {
+      const hidden = Boolean(masking?.hidden);
+      return {
+        facts: factsForAgent(facts, { hidden, keepName: rel => nameAllowed(rel, record.factsRepoPath, record.factsWithheld), titleOf }),
+        factsText: factsText(facts, { names: !hidden }),
+      };
+    }
+    const copy = clone(facts);
+    copy.sharedWith = copy.sharedWith.map(item => ({ ...item, title: titleOf(item.key) }));
+    return { facts: copy, factsText: factsText(facts) };
   }
 
   // What an agent-facing read may say about one session: private folders hide the row's words, and secrets and
@@ -1166,9 +1317,16 @@ export async function createAgentSessions({
     // counting them would light the menu bar up and keep it lit.
     const backgroundWorking = app ? 0 : snapshot.hiddenWorking;
     const summary = { needsYou: totals.needsYou, working: totals.working, backgroundWorking, text: sessionSummaryText(totals) };
+    // Another session named in a row's facts, by the title this view shows for it (masked the same way for an agent).
+    const titleOf = key => {
+      const other = snapshot.byKey?.get(key);
+      if (!other) return null;
+      if (forAgent) return agentTitle(other) ?? `Untitled ${APP_NAMES[other.session.app]} session`;
+      return other.session.title ?? `Untitled ${APP_NAMES[other.session.app]} session`;
+    };
     return {
       version: VERSION, checkedAt: iso(snapshot.at), totals, summary,
-      groups: groups.map(group => ({ id: group.id, title: group.title, sessions: group.records.map(record => publicSession(record, group.id, forAgent, includeContext)) })),
+      groups: groups.map(group => ({ id: group.id, title: group.title, sessions: group.records.map(record => publicSession(record, group.id, forAgent, includeContext, titleOf)) })),
       sources: sources.map(source => ({ ...source, label: text(source.label), detail: source.detail === null ? null : text(source.detail) })),
       byPlace: clone(snapshot.byPlace), settings, warnings,
     };
@@ -1276,7 +1434,7 @@ export async function createAgentSessions({
     // The database reader closes first: it rejects the queries the app readers are waiting on, so they return at once
     // instead of sitting out the snapshot timeout. Waiting for them is then bounded, because nothing cancels a reader.
     if (ownSnapshots && typeof ownSnapshots.close === 'function') await Promise.resolve().then(() => ownSnapshots.close()).catch(() => {});
-    const running = [collecting, ...APPS.map(app => slots[app].pending)].filter(Boolean);
+    const running = [collecting, factsRun, ...APPS.map(app => slots[app].pending)].filter(Boolean);
     if (running.length) await Promise.race([Promise.allSettled(running), new Promise(resolve => { setTimeout(resolve, limit.closeWaitMs).unref?.(); })]);
     for (const app of APPS) {
       const reader = slots[app].reader;

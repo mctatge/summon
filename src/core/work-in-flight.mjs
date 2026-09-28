@@ -56,6 +56,11 @@ const summaryKey = (repoPath, branch) => `${repoPath} ${branch}`;
 const fetchDay = value => validDate(value) ? new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : null;
 const listOf = value => Array.isArray(value) ? value : [];
 const placeFiles = place => listOf(place?.files).filter(file => file && typeof file.path === 'string' && file.path);
+// The folder-relative names an agent-facing read leaves out (the isPrivate rule in assembleRepo), untracked folders
+// with their trailing '/'.
+const withheldFiles = (place, privatePaths) => placeFiles(place).filter(file => {
+  try { const cls = classifyFile(file, { privatePaths }); return Boolean(cls?.private || cls?.secret || cls?.fromPrivate); } catch { return true; }
+}).map(file => (file.isDir && !file.path.endsWith('/') ? `${file.path}/` : file.path));
 const placeCounts = place => ({ staged: count(place?.counts?.staged), unstaged: count(place?.counts?.unstaged), untracked: count(place?.counts?.untracked), conflicted: count(place?.counts?.conflicted) });
 // Folders that only hold other folders, so 'src/engine' says more than 'src' (the nested area key in workstreams.mjs).
 const NESTED_ROOTS = new Set(['src', 'apps', 'packages', 'services', 'libs', 'crates', 'backend', 'frontend']);
@@ -997,6 +1002,15 @@ export async function createWorkInFlight({ dataDir, getProjects = async () => []
             id: clean(ws?.id, 120) || null, title: clean(ws?.title, 80), files: listOf(ws?.files).filter(file => typeof file === 'string' && file).map(file => clean(file, 1024)),
             readiness: READINESS.includes(ws?.readiness) ? ws.readiness : 'in-progress',
           })).filter(ws => ws.title),
+          // The folder's uncommitted files, folder-relative as the scan listed them ('new/' for an untracked folder), so
+          // Agent sessions can say which of a session's own edits are still not committed. Names only, and a name with
+          // a control character is left out rather than cleaned into one that matches nothing.
+          uncommitted: missing ? [] : placeFiles(place).map(file => (file.isDir && !file.path.endsWith('/') ? `${file.path}/` : file.path))
+            .filter(file => file.length <= 1024 && !/[\u0000-\u001f\u007f]/.test(file)),
+          // Of those, the names this view withholds from agents with what only the scan knows (classifyFile): a file
+          // renamed out of a private or secret path, an untracked folder private for the file types inside it. Agent
+          // sessions then withholds exactly what work_in_flight does, not an approximation from the bare names.
+          withheld: missing ? [] : withheldFiles(place, privateFor(entry.repo.path)),
         });
       }
     }
