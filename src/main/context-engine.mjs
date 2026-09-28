@@ -12,13 +12,15 @@ export function validateContextReasoningRequest({prompt,schema}={}){
   if(typeof schemaJson!=='string'||Buffer.byteLength(schemaJson)>CONTEXT_REASONING_LIMITS.schemaBytes)throw new Error('The context reasoning answer format is too large.');
 }
 
-/** One evidence-only structured answer using the explicitly selected engine. */
-export async function runContextReasoning(engine,{prompt,schema,effort='medium',claudeModel='sonnet'}={},{localModel,runGrouping=defaultRunGrouping,...cliOptions}={}){
+/** One evidence-only structured answer using the explicitly selected engine. The Claude and Codex models are the
+ *  background reasoning preferences, read by the caller when the call starts; their defaults here match the preference
+ *  defaults (Sonnet, as before, and GPT-6-Luna). runGrouping checks both against its allowlists before any file or CLI. */
+export async function runContextReasoning(engine,{prompt,schema,effort='medium',claudeModel='sonnet',codexModel='gpt-6-luna'}={},{localModel,runGrouping=defaultRunGrouping,...cliOptions}={}){
   if(!['local','claude','codex'].includes(engine))throw new Error('Choose the local model, Claude or Codex for context reasoning.');
   validateContextReasoningRequest({prompt,schema});
   if(engine==='local'){
     if(typeof localModel?.reasonContext!=='function')throw new Error('The local model is not available for context reasoning. No cloud fallback was used.');
     return localModel.reasonContext({prompt,schema});
   }
-  return runGrouping(engine,{prompt,schema,effort,claudeModel,systemPrompt:CONTEXT_REASONING_SYSTEM_PROMPT},cliOptions);
+  return runGrouping(engine,{prompt,schema,effort,claudeModel,codexModel,systemPrompt:CONTEXT_REASONING_SYSTEM_PROMPT},cliOptions);
 }

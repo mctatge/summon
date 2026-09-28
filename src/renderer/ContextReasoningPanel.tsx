@@ -1,14 +1,35 @@
 import React from 'react';
-import { CircleAlert, RefreshCw, Sparkles } from 'lucide-react';
+import { ChevronDown, CircleAlert, RefreshCw, Sparkles } from 'lucide-react';
 import type { ContextInference, ContextReasoningSettings, ContextReasoningView, VisualGoal } from './types';
 
 const ENGINE_NAMES: Record<string, string> = { auto: 'Auto', local: 'Local model', claude: 'Claude', codex: 'Codex' };
+// The background reasoning models, in the order Preferences lists them; the status line shows the short name of the model
+// an answer reports, and any other reported name (a local model, an older reading) as it came.
+const CLAUDE_MODEL_OPTIONS: [ContextReasoningSettings['claudeModel'], string][] = [['sonnet', 'Sonnet'], ['haiku', 'Haiku'], ['opus', 'Opus']];
+const CODEX_MODEL_OPTIONS: [ContextReasoningSettings['codexModel'], string][] = [['gpt-6-luna', 'GPT-6-Luna — fast and affordable'], ['gpt-6-sol', 'GPT-6-Sol'], ['gpt-6-astra', 'GPT-6-Astra'], ['default', 'Codex’s own default']];
+const MODEL_NAMES: Record<string, string> = { sonnet: 'Sonnet', haiku: 'Haiku', opus: 'Opus', 'gpt-6-luna': 'GPT-6-Luna', 'gpt-6-sol': 'GPT-6-Sol', 'gpt-6-astra': 'GPT-6-Astra' };
+export const modelName = (model: string) => Object.hasOwn(MODEL_NAMES, model) ? MODEL_NAMES[model] : model;
 const stamp = (at: string) => Number.isFinite(Date.parse(at)) ? new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : 'earlier';
+
+/** Preferences section: the models goal reasoning and session names use when Reason with lands on Claude or Codex. */
+export function BackgroundReasoningPreferences({ settings, disabled, onChange }: {
+  settings: ContextReasoningSettings | null | undefined; disabled: boolean;
+  onChange: (patch: Partial<Pick<ContextReasoningSettings, 'claudeModel' | 'codexModel'>>) => void;
+}) {
+  const off = disabled || !settings;
+  return <section className="preference-section"><h3><Sparkles size={16} />Background reasoning</h3>
+    <div className="model-choice">
+      <label className="wif-engine"><span>Claude model</span><select aria-label="Claude model for background reasoning" value={settings?.claudeModel ?? 'sonnet'} disabled={off} onChange={event => onChange({ claudeModel: event.target.value as ContextReasoningSettings['claudeModel'] })}>{CLAUDE_MODEL_OPTIONS.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select><ChevronDown size={12} /></label>
+      <label className="wif-engine"><span>Codex model</span><select aria-label="Codex model for background reasoning" value={settings?.codexModel ?? 'gpt-6-luna'} disabled={off} onChange={event => onChange({ codexModel: event.target.value as ContextReasoningSettings['codexModel'] })}>{CODEX_MODEL_OPTIONS.map(([id, name]) => <option value={id} key={id}>{name}</option>)}</select><ChevronDown size={12} /></label>
+    </div>
+    <p className="preference-note">Used for goals and session names whenever Reason with, in the Goals panel, picks Claude or Codex, including through Auto.{settings ? '' : ' Goal reasoning is not available right now, so these cannot be changed.'}</p>
+  </section>;
+}
 
 export function ReasoningEvidence({ inference }: { inference: ContextInference }) {
   return <div className="vw-reasoning-evidence"><p>{inference.summary}</p>
     {inference.evidence.length > 0 && <ul aria-label="Evidence for this inference">{inference.evidence.map((item, index) => <li key={index}>{item}</li>)}</ul>}
-    <p className="vw-footnote">{inference.confidence} confidence · {ENGINE_NAMES[inference.engine] || inference.engine}{inference.model ? ` · ${inference.model}` : ''} · {stamp(inference.updatedAt)}</p>
+    <p className="vw-footnote">{inference.confidence} confidence · {ENGINE_NAMES[inference.engine] || inference.engine}{inference.model ? ` · ${modelName(inference.model)}` : ''} · {stamp(inference.updatedAt)}</p>
   </div>;
 }
 
@@ -44,8 +65,8 @@ export function ContextReasoningPanel({ value, scope, savedGoals = [], busy, err
       <label className="vw-reasoning-toggle"><input type="checkbox" checked={settings.enabled} disabled={!available || busy || !supportedScope} onChange={event => onSettings({ enabled: event.target.checked })} />Enable automatic reasoning</label>
       <button type="button" className="vw-button" disabled={!available || busy || running || !settings.enabled || !supportedScope} onClick={onRefresh}><RefreshCw size={13} className={running ? 'vw-spin' : ''} aria-hidden="true" />{running ? 'Reasoning…' : 'Reason now'}</button>
     </div>
-    <div className="vw-reasoning-status" role="status"><span>{status}</span>{supportedScope && reading?.engine && <span>{ENGINE_NAMES[reading.engine] || reading.engine}{reading.model ? ` · ${reading.model}` : ''}</span>}</div>
-    <p className="vw-footnote">Auto prefers an available local model, then chooses Claude or Codex based on usage limits. Local reasoning stays on this Mac; Claude and Codex receive filtered context excerpts.</p>
+    <div className="vw-reasoning-status" role="status"><span>{status}</span>{supportedScope && reading?.engine && <span>{ENGINE_NAMES[reading.engine] || reading.engine}{reading.model ? ` · ${modelName(reading.model)}` : ''}</span>}</div>
+    <p className="vw-footnote">Auto prefers an available local model, then chooses Claude or Codex based on usage limits. Local reasoning stays on this Mac; Claude and Codex receive filtered context excerpts. Their models are chosen in Preferences, under Background reasoning.</p>
     {problem && <p className="vw-reasoning-error" role="alert"><CircleAlert size={14} aria-hidden="true" /><span>{problem}{openGoals.length ? ' Your saved goals are still shown.' : reading?.updatedAt && inferredSummary ? ' The previous reading is still shown.' : ''}</span></p>}
     {!available && <p className="vw-footnote">Quit and reopen Summon to connect this window to goal reasoning.</p>}
   </section>;

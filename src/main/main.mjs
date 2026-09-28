@@ -73,7 +73,7 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
   const dataDir=app.getPath('userData');
   // Sealed folders: path segments Summon never reads, opens or launches into, from <dataDir>/sealed.json ({"segments":[...]}) on this machine; nothing is shipped and the applied list is never shown.
   loadSealedSegments(dataDir,{warn:message=>console.error(message)});
-  const snapshot=()=>({...service.snapshot(),teaching:teaching?.brief?.(),benchmark:benchmarkData,knowledge:knowledge?.snapshot(),localModel:localModel?.status(),wake:wake?.status(),speaker:speaker?.status(),fnKey:fnKey?{status:fnKey.status()}:undefined,usage:usage?.status(),settings:{...service.snapshot().settings,benchmarkKeyConfigured:keyConfigured},dataDir});
+  const snapshot=()=>({...service.snapshot(),teaching:teaching?.brief?.(),benchmark:benchmarkData,knowledge:knowledge?.snapshot(),localModel:localModel?.status(),wake:wake?.status(),speaker:speaker?.status(),fnKey:fnKey?{status:fnKey.status()}:undefined,usage:usage?.status(),reasoning:contextReasoning?.settings?.(),settings:{...service.snapshot().settings,benchmarkKeyConfigured:keyConfigured},dataDir});
   const push=()=>{if(service&&window&&!window.isDestroyed())window.webContents.send('summon:update',snapshot());voiceControl?.publish();};
   const revealWindow=()=>{if(window&&!window.isDestroyed()){if(window.webContents.isCrashed?.())window.webContents.reload();window.show();window.focus();}else if(window){app.relaunch();app.quit();}};
   const trusted=event=>Boolean(window&&event.sender===window.webContents&&event.senderFrame===window.webContents.mainFrame);
@@ -250,8 +250,11 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
     powerMonitor.on('suspend',()=>{recoveryAsleep=true;clearTimeout(recoveryTimer);recoveryTimer=undefined;});
     powerMonitor.on('resume',()=>{recoveryAsleep=false;scheduleRecovery(5000);});
     // Goal reasoning and session names share one model path, one call at a time, so the local model never turns the second away as busy.
-    let reasoningQueue=Promise.resolve();
-    const reason=(engine,request)=>{const next=reasoningQueue.then(()=>runContextReasoning(engine,request,{localModel,executable,run,scrubbedEnv}));reasoningQueue=next.catch(()=>{});return next;};
+    // The background Claude and Codex models are read as each call starts, so a change in Preferences applies from the next call;
+    // without the preferences the adapter's own defaults apply. Other model paths (grouping, answers, teaching, launches) keep theirs.
+    let reasoningQueue=Promise.resolve();const reasoningNotices=[];
+    const reasoningModels=()=>{const {claudeModel,codexModel}=contextReasoning?.settings?.()??{};return {...(claudeModel!==undefined?{claudeModel}:{}),...(codexModel!==undefined?{codexModel}:{})};};
+    const reason=(engine,request)=>{const next=reasoningQueue.then(()=>runContextReasoning(engine,{...request,...reasoningModels()},{localModel,executable,run,scrubbedEnv}));reasoningQueue=next.catch(()=>{});return next;};
     const autoEngine=async()=>{const local=await localModel.health();return local.available?'local':chooseEngine({usage:usage?.status(),settings:usage?.settings?.()}).engine;};
     const reasoningScope=()=>JSON.stringify([service.snapshot().projects,service.snapshot().settings.paused,service.snapshot().settings.activityEnabled,service.snapshot().settings.accessibilityEnabled,service.snapshot().settings.excludedApps,workInFlight?.settings?.(),agentSessions?.settings?.()]);
     try{contextReasoning=await createContextReasoning({dataDir,getScope:reasoningScope,getSelectedRepoId:()=>service.snapshot().currentProjectId??null,
@@ -269,7 +272,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
         }
         return {flight:flightView,sessions:sessionView,snapshot:state,projectNotes,explicitGoals:repos.flatMap(repo=>visualWorkspace?.explicitGoals(repo.id)??[]),utterances:recentInputs,privatePaths:workInFlight?.settings?.().privatePaths??{}};
       },
-      infer:reason,selectEngine:autoEngine});
+      // A saved model this version does not offer is replaced by its default and reported here until a model is chosen.
+      infer:reason,selectEngine:autoEngine,warn:message=>{const text=`Context reasoning: ${message}`;reasoningNotices.push(text);service.setHealth({errors:[text]});}});
     }catch(error){service.setHealth({errors:[`Context reasoning: ${error.message}`]});}
     // Every project's sessions, independent of the selected workspace; the same enabled setting, engine choice and pause as goal reasoning.
     const namesHealth=new Set();
@@ -298,7 +302,8 @@ const single=app.requestSingleInstanceLock();if(!single){app.quit();}else{
       if(value.refresh===true)void sessionNames?.refresh({force:true});
       return reasoning().request({force:value.refresh===true,...(value.repoId!==undefined?{repoId:value.repoId}:{})});
     });
-    handle('context-reasoning-settings',async patch=>{const view=await reasoning().updateSettings(patch);if(!view.settings.enabled)recentInputs.length=0;else{reasoning().poll();sessionNames?.poll();}return view;});
+    // Only these four keys, each of its type, cross from the window; core checks every value against its allowlist before writing.
+    handle('context-reasoning-settings',async patch=>{if(!patch||typeof patch!=='object')throw new Error('Invalid request');const view=await reasoning().updateSettings(flightOptions(patch,{enabled:'boolean',engine:'string',claudeModel:'string',codexModel:'string'}));if(reasoningNotices.length)service.setHealth({resolved:reasoningNotices.splice(0)});if(!view.settings.enabled)recentInputs.length=0;else{reasoning().poll();sessionNames?.poll();}return view;});
     function scheduleReasoning(delay=60000){clearTimeout(reasoningTimer);if(quitting||reasoningAsleep||!contextReasoning)return;reasoningTimer=setTimeout(()=>{reasoningTimer=undefined;if(!service.snapshot().settings.paused){contextReasoning.poll();sessionNames?.poll();}scheduleReasoning();},delay);reasoningTimer.unref?.();}
     powerMonitor.on('suspend',()=>{reasoningAsleep=true;clearTimeout(reasoningTimer);reasoningTimer=undefined;});
     powerMonitor.on('resume',()=>{reasoningAsleep=false;scheduleReasoning(5000);});

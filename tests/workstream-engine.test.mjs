@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readdir,readFile,rm} from 'node:fs/promises';
 import path from 'node:path';
-import {groupingArgs,runGrouping} from '../src/main/workstream-engine.mjs';
+import {groupingArgs,runGrouping,CLAUDE_MODELS,CODEX_MODELS} from '../src/main/workstream-engine.mjs';
+import {REASONING_CLAUDE_MODELS,REASONING_CODEX_MODELS} from '../src/core/context-reasoning.mjs';
 import {restrictedCodexArgs} from '../src/main/engines.mjs';
 import {scrubbedEnv} from '../src/main/process.mjs';
 
@@ -27,6 +28,51 @@ test('Codex grouping keeps every restricted flag and adds only the schema and ef
   for(const name of ['shell_tool','apps','plugins','hooks','browser_use','computer_use','multi_agent','image_generation'])assert.ok(disabled.includes(name));
   assert.ok(!args.some(x=>/bypass|full-auto|danger/.test(x)));
   assert.equal(groupingArgs('codex',{schemaPath:'/s.json'}).find(x=>x.startsWith('model_reasoning_effort')),'model_reasoning_effort="medium"');
+});
+test('a chosen Codex model is one allowlisted --model value before stdin; Codex\'s default adds no flag',()=>{
+  const base=restrictedCodexArgs();
+  assert.deepEqual([...CODEX_MODELS],['gpt-6-luna','gpt-6-sol','gpt-6-astra','default']);
+  for(const model of ['gpt-6-luna','gpt-6-sol','gpt-6-astra']){
+    const args=groupingArgs('codex',{schemaPath:'/private/tmp/x/schema.json',effort:'medium',codexModel:model});
+    assert.deepEqual(args,[...base.slice(0,-1),'--output-schema','/private/tmp/x/schema.json','--model',model,'-c','model_reasoning_effort="medium"','-']);
+    assert.equal(args.filter(x=>x==='--model'||x==='-m').length,1);
+    assert.deepEqual(args.filter(x=>x!=='--model'&&x!==model),groupingArgs('codex',{schemaPath:'/private/tmp/x/schema.json',effort:'medium'}),'every other flag is unchanged');
+  }
+  const plain=groupingArgs('codex',{schemaPath:'/private/tmp/x/schema.json',codexModel:'default'});
+  assert.deepEqual(plain,groupingArgs('codex',{schemaPath:'/private/tmp/x/schema.json'}));
+  assert.ok(!plain.includes('--model')&&!plain.includes('-m'));
+  // Anything off the list is refused, however it is spelled; it never becomes an argument.
+  for(const model of ['gpt-5','GPT-6-Luna','gpt-6-luna --dangerously-bypass-approvals-and-sandbox','--sandbox','openai/gpt-6-luna','','model="o3"',null,42,['gpt-6-luna']]){
+    assert.throws(()=>groupingArgs('codex',{schemaPath:'/s.json',codexModel:model}),/Codex model/,String(model));
+  }
+  assert.throws(()=>groupingArgs('claude',{schemaJson:'{}',codexModel:'gpt-5'}),/Codex model/,'checked for either engine');
+  assert.ok(!groupingArgs('claude',{schemaJson:'{}',codexModel:'gpt-6-luna'}).includes('gpt-6-luna'),'a Codex model never reaches Claude');
+});
+test('every model the reasoning preferences accept is one the argument builder accepts, and no more',()=>{
+  // Four hand-kept lists (core, this builder, the Preferences options, the types) must agree: a value core accepted and
+  // the builder refused would fail every background pass with the generic error and back off.
+  assert.deepEqual([...REASONING_CODEX_MODELS].sort(),[...CODEX_MODELS].sort());
+  for(const model of REASONING_CODEX_MODELS)assert.doesNotThrow(()=>groupingArgs('codex',{schemaPath:'/s.json',codexModel:model}),model);
+  for(const model of REASONING_CLAUDE_MODELS){
+    const args=groupingArgs('claude',{schemaJson:'{}',claudeModel:model});
+    assert.equal(args[args.indexOf('--model')+1],model);
+  }
+  assert.deepEqual([...REASONING_CLAUDE_MODELS].sort(),[...CLAUDE_MODELS].sort());
+});
+test('Codex grouping reports the model it asked for unless Codex names one, and refuses an unknown model before any file or CLI',async t=>{
+  const tmp=await sandbox(t);
+  const reply=extra=>()=>({stdout:[...extra,{type:'item.completed',item:{type:'agent_message',text:JSON.stringify(answer)}}].map(x=>JSON.stringify(x)).join('\n')});
+  const asked=fakes(tmp,reply([]));
+  assert.deepEqual(await runGrouping('codex',{prompt:'x',schema,codexModel:'gpt-6-luna'},asked.deps),{raw:answer,model:'gpt-6-luna'});
+  assert.equal(asked.calls[0].args[asked.calls[0].args.indexOf('--model')+1],'gpt-6-luna');
+  const named=fakes(tmp,reply([{type:'session.configured',model:'gpt-6-sol'}]));
+  assert.equal((await runGrouping('codex',{prompt:'x',schema,codexModel:'gpt-6-luna'},named.deps)).model,'gpt-6-sol');
+  const unset=fakes(tmp,reply([]));
+  assert.equal((await runGrouping('codex',{prompt:'x',schema},unset.deps)).model,null,'with no flag and no event the model stays unknown');
+  assert.ok(!unset.calls[0].args.includes('--model'));
+  const refused=fakes(tmp,()=>assert.fail('an unknown model must not start the CLI'));
+  await assert.rejects(runGrouping('codex',{prompt:'x',schema,codexModel:'gpt-7'},refused.deps),/Codex model/);
+  assert.deepEqual(await readdir(tmp),[]);
 });
 test('Claude grouping is tool-less, schema-bound and never names an API key',()=>{
   const args=groupingArgs('claude',{schemaJson:JSON.stringify(schema),effort:'low',claudeModel:'sonnet'});

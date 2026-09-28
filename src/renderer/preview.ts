@@ -12,7 +12,7 @@ const ago = (minutes: number) => new Date(now - minutes * 60_000).toISOString();
 export function previewContextReasoning(): ContextReasoningView {
   const sessions = previewAgentSessions.groups.flatMap(group => group.sessions);
   return {
-    settings: { enabled: true, engine: 'auto' }, status: 'ready', updatedAt: ago(2), engine: 'local', model: 'Local preview', error: null, stale: false,
+    settings: { enabled: true, engine: 'auto', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' }, status: 'ready', updatedAt: ago(2), engine: 'local', model: 'Local preview', error: null, stale: false,
     summary: 'You’re making the workspace easier to follow, while refining how the draft board recommends the next pick.',
     goals: previewWorkInFlight.repos.filter(repo => !repo.error).slice(0, 2).map((repo, index) => ({
       id: `inferred-preview-${repo.id}`, repoId: repo.id, title: index ? 'Help players make the next draft pick' : 'Make the workspace explain what changed', status: 'working', parentId: null, dependsOn: [],
@@ -110,6 +110,8 @@ export const previewSnapshot: Snapshot = {
   ],
   settings: { paused: false, accessibilityEnabled: false, activityEnabled: true, retentionDays: 30, calendarUrl: '', whisperModel: '', handsFree: false, excludedApps: [] },
   health: { watching: false, accessibility: false, native: false, whisper: false, errors: [], lastScanAt: null },
+  // The background reasoning preferences at their defaults, so Preferences shows the section as it is, not unavailable.
+  reasoning: { enabled: true, engine: 'auto', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' },
   // Usage meter sample: made-up numbers in the shape each CLI reports.
   usage: { version: 1, settings: { usageCeiling: 85, defaultEngine: 'claude' }, refreshing: [], problem: null, providers: {
     claude: { provider: 'claude', plan: 'max', status: 'ok', fetchedAt: ago(4), stale: false, windows: [{ id: 'five_hour', label: '5h', usedPercent: 27, resetsAt: ago(-180) }, { id: 'seven_day', label: '7d', usedPercent: 18, resetsAt: ago(-4000) }] },

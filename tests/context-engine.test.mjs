@@ -21,8 +21,23 @@ test('context adapter forwards only the selected cloud engine and reasoning inst
     let received;
     const result=await runContextReasoning(engine,{prompt:'recent evidence',schema},{runGrouping:async(...args)=>{received=args;return {raw,model:'model'};},tmp:'/tmp/reasoning'});
     assert.deepEqual(result,{raw,model:'model'});
-    assert.deepEqual(received,[engine,{prompt:'recent evidence',schema,effort:'medium',claudeModel:'sonnet',systemPrompt:CONTEXT_REASONING_SYSTEM_PROMPT},{tmp:'/tmp/reasoning'}]);
+    assert.deepEqual(received,[engine,{prompt:'recent evidence',schema,effort:'medium',claudeModel:'sonnet',codexModel:'gpt-6-luna',systemPrompt:CONTEXT_REASONING_SYSTEM_PROMPT},{tmp:'/tmp/reasoning'}]);
   }
+});
+
+test('context adapter passes both background models through, and they are checked before any CLI starts',async()=>{
+  for(const engine of ['claude','codex']){
+    let received;
+    await runContextReasoning(engine,{prompt:'recent evidence',schema,claudeModel:'haiku',codexModel:'gpt-6-astra'},{runGrouping:async(...args)=>{received=args;return {raw,model:'model'};}});
+    assert.equal(received[1].claudeModel,'haiku');
+    assert.equal(received[1].codexModel,'gpt-6-astra');
+  }
+  const local=[];
+  await runContextReasoning('local',{prompt:'recent evidence',schema,claudeModel:'opus',codexModel:'gpt-6-sol'},{localModel:{reasonContext:async request=>{local.push(request);return {raw,model:'local'};}},runGrouping:()=>assert.fail('must stay local')});
+  assert.deepEqual(local,[{prompt:'recent evidence',schema}],'the local model never sees the cloud model choice');
+  const neverRun=async()=>assert.fail('an unknown model must not start the CLI');
+  await assert.rejects(runContextReasoning('codex',{prompt:'x',schema,codexModel:'gpt-5'},{executable:neverRun,run:neverRun}),/Codex model/);
+  await assert.rejects(runContextReasoning('claude',{prompt:'x',schema,claudeModel:'claude-3'},{executable:neverRun,run:neverRun}),/Claude model/);
 });
 
 test('context reasoning rejects invalid requests before invoking any model',async()=>{
@@ -77,6 +92,8 @@ test('real CLI adapter keeps restricted invocation, uses reasoning instructions 
       const disabled=call.args.flatMap((arg,i)=>arg==='--disable'?[call.args[i+1]]:[]);
       for(const capability of ['shell_tool','apps','plugins','hooks','browser_use','computer_use','multi_agent'])assert.ok(disabled.includes(capability));
       assert.equal(call.options.input,`${CONTEXT_REASONING_SYSTEM_PROMPT}\n\nrecent evidence`);
+      assert.equal(value('--model'),'gpt-6-luna','background reasoning defaults to GPT-6-Luna');
+      assert.equal(result.model,'gpt-6-luna');
     }
     assert.deepEqual(await readdir(tmp),[]);
   }

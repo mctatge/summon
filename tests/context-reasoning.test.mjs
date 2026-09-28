@@ -125,7 +125,78 @@ test('changed evidence refreshes goals, unchanged polling is free, failures reta
   assert.equal(f.service.read().goals.length, 0);
   await f.service.refresh(); assert.equal(f.calls.at(-1).engine, 'local');
   const saved = JSON.parse(await fs.readFile(path.join(f.dataDir, 'context-reasoning.json'), 'utf8'));
-  assert.deepEqual(saved, { enabled: true, engine: 'local' });
+  assert.deepEqual(saved, { enabled: true, engine: 'local', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' });
+});
+
+test('background reasoning models: defaults, strict values, and a file from before them loads untouched', async t => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'summon-context-models-'));
+  t.after(() => fs.rm(dataDir, { recursive: true, force: true }));
+  const file = path.join(dataDir, 'context-reasoning.json'), older = JSON.stringify({ enabled: false, engine: 'codex' });
+  await fs.writeFile(file, older);
+  const service = await createContextReasoning({ dataDir, getInput: async () => input() });
+  t.after(() => service.close());
+  assert.deepEqual(service.settings(), { enabled: false, engine: 'codex', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' });
+  assert.deepEqual(service.read().settings, service.settings());
+  assert.equal(await fs.readFile(file, 'utf8'), older, 'loading never rewrites the file');
+  service.settings().codexModel = 'gpt-6-sol';
+  assert.equal(service.settings().codexModel, 'gpt-6-luna', 'callers get a copy');
+  for (const patch of [{ codexModel: 'gpt-5' }, { codexModel: 'GPT-6-Luna' }, { codexModel: '--model' }, { codexModel: null }, { codexModel: undefined }, { claudeModel: 'claude-opus-4-1' }, { claudeModel: 'sonnet ' }, { claudeModel: 1 }, { model: 'gpt-6-luna' }, { codexModel: 'gpt-6-luna', extra: true }, ['gpt-6-luna'], null]) {
+    await assert.rejects(service.updateSettings(patch), /Invalid reasoning settings/, JSON.stringify(patch));
+  }
+  assert.equal(await fs.readFile(file, 'utf8'), older, 'a refused patch writes nothing');
+  await service.updateSettings({ codexModel: 'default' });
+  assert.deepEqual(JSON.parse(await fs.readFile(file, 'utf8')), { enabled: false, engine: 'codex', claudeModel: 'sonnet', codexModel: 'default' }, 'the next change writes the whole object');
+  await service.updateSettings({ claudeModel: 'haiku', codexModel: 'gpt-6-astra' });
+  const reopened = await createContextReasoning({ dataDir, getInput: async () => input() });
+  t.after(() => reopened.close());
+  assert.deepEqual(reopened.settings(), { enabled: false, engine: 'codex', claudeModel: 'haiku', codexModel: 'gpt-6-astra' });
+  // A saved model this version does not offer (a list that dropped it, a file a newer build wrote) falls back to its
+  // default in memory and is reported; it is never passed on, and the file is left as it is.
+  const unknown = JSON.stringify({ enabled: true, engine: 'claude', claudeModel: 'opus-9', codexModel: 'gpt-4o' });
+  await fs.writeFile(file, unknown);
+  const warnings = [];
+  const lenient = await createContextReasoning({ dataDir, getInput: async () => input(), warn: message => warnings.push(message) });
+  t.after(() => lenient.close());
+  assert.deepEqual(lenient.settings(), { enabled: true, engine: 'claude', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' });
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /saved Claude model is not one this version offers.*sonnet/);
+  assert.match(warnings[1], /saved Codex model is not one this version offers.*gpt-6-luna/);
+  assert.ok(warnings.every(message => !/opus-9|gpt-4o/.test(message)), 'the unknown value is not repeated');
+  assert.equal(await fs.readFile(file, 'utf8'), unknown, 'loading never rewrites the file');
+  for (const value of [{ codexModel: 7 }, { claudeModel: null }]) {
+    await fs.writeFile(file, JSON.stringify({ enabled: true, engine: 'auto', ...value }));
+    const service = await createContextReasoning({ dataDir, getInput: async () => input() });
+    t.after(() => service.close());
+    assert.deepEqual(service.settings(), { enabled: true, engine: 'auto', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' }, JSON.stringify(value));
+  }
+  // Everything else in the file is still checked strictly.
+  for (const bad of [{ enabled: true, engine: 'gpt-6-luna' }, { enabled: 'yes' }, { enabled: true, model: 'gpt-6-luna' }]) {
+    await fs.writeFile(file, JSON.stringify(bad));
+    await assert.rejects(createContextReasoning({ dataDir }), /left untouched/, JSON.stringify(bad));
+  }
+});
+
+test('a model change clears only a reading made with that model, and the status line never names the old one', async t => {
+  // The reading came from Codex: changing the Claude model leaves it, and the engine and model it names, as they are.
+  const f = await fixture(t);
+  await f.service.refresh();
+  assert.deepEqual([f.service.read().engine, f.service.read().model, f.service.read().goals.length], ['codex', 'test-model', 1]);
+  let view = await f.service.updateSettings({ claudeModel: 'haiku' });
+  assert.deepEqual([view.engine, view.model, view.status, view.goals.length], ['codex', 'test-model', 'ready', 1]);
+  // Changing the Codex model clears the reading together with the engine and model its status line showed.
+  view = await f.service.updateSettings({ codexModel: 'gpt-6-sol' });
+  assert.deepEqual([view.engine, view.model, view.status, view.updatedAt, view.goals.length], [null, null, 'idle', null, 0]);
+  // A failed pass with the new model is not shown beside the previous model's name.
+  const failing = await fixture(t, { infer: async () => { throw new Error('This account cannot use that model.'); } });
+  await failing.service.updateSettings({ engine: 'claude' });
+  await failing.service.refresh({ force: true });
+  assert.deepEqual([failing.service.read().status, failing.service.read().engine, failing.service.read().model], ['error', 'claude', null]);
+  view = await failing.service.updateSettings({ claudeModel: 'opus' });
+  assert.deepEqual([view.status, view.error, view.engine, view.model], ['idle', null, null, null], 'a change to the model that failed starts over');
+  // An engine change still clears everything, whatever the reading came from.
+  await f.service.refresh({ force: true });
+  view = await f.service.updateSettings({ engine: 'local' });
+  assert.deepEqual([view.engine, view.model, view.goals.length], [null, null, 0]);
 });
 
 test('overlapping refreshes share one request; privacy changes and late results cannot resurrect old text', async t => {

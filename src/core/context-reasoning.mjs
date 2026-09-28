@@ -9,6 +9,11 @@ const object = value => value && typeof value === 'object' && !Array.isArray(val
 const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clean = (value, max = 500) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) : '';
 const engines = ['auto', 'local', 'claude', 'codex'];
+// Background reasoning models: which Claude or Codex model goal reasoning and session names use whenever the engine is
+// Claude or Codex, chosen or through Auto. Each is one allowlisted argv value; 'default' passes no Codex model flag.
+export const REASONING_CLAUDE_MODELS = Object.freeze(['sonnet', 'haiku', 'opus']);
+export const REASONING_CODEX_MODELS = Object.freeze(['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'default']);
+const settingKeys = ['enabled', 'engine', 'claudeModel', 'codexModel'];
 const confidence = ['high', 'medium', 'low'];
 const statuses = ['planned', 'working', 'blocked', 'done'];
 const textSchema = { type: 'string', maxLength: 300 };
@@ -197,15 +202,31 @@ export function validateContextResult(raw, packet, { engine, model = null, updat
 }
 
 /** Memory-only goal inferences; disk holds preferences only, never conversation excerpts. Session names live in session-names.mjs. */
-export async function createContextReasoning({ dataDir, getInput, getScope = () => '', getSelectedRepoId = () => null, infer, selectEngine = async () => 'local', now = Date.now, intervalMs = 120_000, maxBackoffMs = 30 * 60_000, onChange = () => {} } = {}) {
+export async function createContextReasoning({ dataDir, getInput, getScope = () => '', getSelectedRepoId = () => null, infer, selectEngine = async () => 'local', now = Date.now, intervalMs = 120_000, maxBackoffMs = 30 * 60_000, onChange = () => {}, warn = () => {} } = {}) {
   const filename = path.join(dataDir, 'context-reasoning.json');
-  let settings = { enabled: true, engine: 'auto' };
+  // A file written before the model preferences existed ({enabled, engine}) loads with the defaults below and is left as
+  // it is until the next change writes the whole object.
+  const modelDefaults = { claudeModel: 'sonnet', codexModel: 'gpt-6-luna' };
+  let settings = { enabled: true, engine: 'auto', ...modelDefaults };
   const checkedSettings = patch => {
-    if (!object(patch) || Object.keys(patch).some(key => !['enabled', 'engine'].includes(key)) || (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') || (patch.engine !== undefined && !engines.includes(patch.engine))) throw new Error('Invalid reasoning settings.');
+    // Every key present must carry a valid value; a key sent as undefined would otherwise erase its preference.
+    if (!object(patch) || Object.keys(patch).some(key => !settingKeys.includes(key) || patch[key] === undefined) || (patch.enabled !== undefined && typeof patch.enabled !== 'boolean') || (patch.engine !== undefined && !engines.includes(patch.engine))
+      || (patch.claudeModel !== undefined && !REASONING_CLAUDE_MODELS.includes(patch.claudeModel)) || (patch.codexModel !== undefined && !REASONING_CODEX_MODELS.includes(patch.codexModel))) throw new Error('Invalid reasoning settings.');
     return { ...settings, ...patch };
   };
-  try { const stat = await fs.stat(filename); if (stat.size > 4096) throw new Error('Reasoning preferences are too large.'); settings = checkedSettings(JSON.parse(await fs.readFile(filename, 'utf8'))); }
+  // Model names change far more often than engines: a saved model this version does not offer (a list that dropped it,
+  // or a file a newer build or another worktree wrote) is replaced by its default in memory and reported, never passed
+  // on, while the file stays as it is until the next change writes the whole object. Refusing the file would stop goal
+  // reasoning and session names until it was deleted by hand. Every other key and value is still checked strictly.
+  const replaced = [];
+  try {
+    const stat = await fs.stat(filename); if (stat.size > 4096) throw new Error('Reasoning preferences are too large.');
+    const saved = JSON.parse(await fs.readFile(filename, 'utf8'));
+    if (object(saved)) for (const [key, list] of [['claudeModel', REASONING_CLAUDE_MODELS], ['codexModel', REASONING_CODEX_MODELS]]) if (Object.hasOwn(saved, key) && !list.includes(saved[key])) { replaced.push(key); delete saved[key]; }
+    settings = checkedSettings(saved);
+  }
   catch (error) { if (error.code !== 'ENOENT') throw new Error('Context reasoning preferences could not be read. The file was left untouched.'); }
+  for (const key of replaced) { try { warn(`The saved ${key === 'claudeModel' ? 'Claude' : 'Codex'} model is not one this version offers, so its default (${modelDefaults[key]}) is used until another is chosen in Preferences.`); } catch {} }
   let result = { summary: '', goals: [] }, status = 'idle', error = null, updatedAt = null, engine = null, model = null;
   let lastHash = null, lastAttempt = -Infinity, pending = null, closed = false, generation = 0, scope = getScope(), queue = Promise.resolve(), stale = false;
   let focusRepoId, activeRepoId = getSelectedRepoId(), queuedRefresh = false, failures = 0, pendingForced = false;
@@ -291,13 +312,24 @@ export async function createContextReasoning({ dataDir, getInput, getScope = () 
     const task = queue.then(async () => {
       if (closed) throw new Error('Summon is closing.');
       const next = checkedSettings(patch), temp = `${filename}.${randomUUID()}.tmp`;
+      // A change of model alone reaches only readings from that model's CLI. One made with the other CLI or the local
+      // model (Auto may have landed on either) stays, with the engine and model its status line names; a change to the
+      // model behind the current reading (or with none yet) clears it like an engine change, engine and model too, so
+      // the status line never names the previous model beside the new model's pass or error.
+      const changed = settingKeys.filter(key => next[key] !== settings[key]);
+      const modelOnly = changed.length > 0 && changed.every(key => key === 'claudeModel' || key === 'codexModel');
+      const affects = !modelOnly || engine === null || changed.includes(`${engine}Model`);
       await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
       try { await fs.writeFile(temp, JSON.stringify(next), { mode: 0o600, flag: 'wx' }); await fs.rename(temp, filename); }
       finally { await fs.rm(temp, { force: true }); }
-      settings = next; generation++; lastAttempt = -Infinity; lastHash = null; result = { summary: '', goals: [] }; updatedAt = null; status = 'idle'; error = null; stale = false; failures = 0; notify();
+      settings = next;
+      if (affects) { generation++; lastAttempt = -Infinity; lastHash = null; result = { summary: '', goals: [] }; updatedAt = null; status = 'idle'; error = null; engine = null; model = null; stale = false; failures = 0; }
+      notify();
       return read();
     });
     queue = task.catch(() => {}); return task;
   }
-  return { read, request, poll, releaseFocus, refresh, updateSettings, async close() { closed = true; generation++; await queue; await pending; } };
+  // The preferences alone, for Preferences and for the model a call starts with: no scope check and no reading.
+  const currentSettings = () => clone(settings);
+  return { read, settings: currentSettings, request, poll, releaseFocus, refresh, updateSettings, async close() { closed = true; generation++; await queue; await pending; } };
 }

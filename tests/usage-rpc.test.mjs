@@ -93,7 +93,7 @@ async function launch(){
   const missing=async()=>{throw new Error('Synthetic fixture has no optional files.');};
   const executable=async name=>`/synthetic/bin/${name}`,spawnLongLived=()=>assert.fail('No CLI is spawned in this lifecycle.');
   const ctx={handlers:new Map(),trays:[],power:new Map(),asks:[],choices:[],readerOptions:{},usageOptions:null,rpcOptions:null,core:null,window:null,health:[],recoveryScans:[],executable,spawnLongLived};
-  ctx.reasoning={stored:{enabled:false,engine:'auto'},calls:[],closed:0,read(){return {settings:{...this.stored}};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},async close(){this.closed++;}};
+  ctx.reasoning={stored:{enabled:false,engine:'auto',claudeModel:'sonnet',codexModel:'gpt-6-luna'},calls:[],closed:0,read(){return {settings:{...this.stored}};},settings(){return {...this.stored};},request(options){this.calls.push(['request',options]);return this.read();},poll(){this.calls.push(['poll']);return this.read();},releaseFocus(){this.calls.push(['release']);return this.read();},async updateSettings(patch){this.calls.push(['settings',patch]);Object.assign(this.stored,patch);return this.read();},async close(){this.closed++;}};
   ctx.names={calls:[],closed:0,error:null,problem:null,poll(){this.calls.push(['poll']);return this.read();},refresh(options){this.calls.push(['refresh',options]);return Promise.resolve(this.read());},decorate(view){this.calls.push(['decorate',view]);return view;},read(){return {status:'idle',error:this.error,problem:this.problem,names:{}};},async close(){this.closed++;}};
   ctx.sessionReads=[];ctx.flightReads=[];ctx.extraRepos=[];ctx.inferences=[];ctx.projectReads=[];ctx.localAvailable=false;
   ctx.core={calls:[],stored:{usageCeiling:85,defaultEngine:'claude'},providers:{claude:null,codex:null},started:0,paused:0,resumed:0,stopped:0,closed:0,
@@ -247,6 +247,7 @@ test('main opts into conversation evidence only for reasoning, routes engines an
       await assert.rejects(handler({ sender: ctx.window.webContents, senderFrame: {} }, {}), /Untrusted/);
     }
     await ctx.call('context-reasoning-settings', { enabled: true, engine: 'auto' });
+    assert.deepEqual(plain(ctx.reasoning.calls.findLast(call => call[0] === 'settings')), ['settings', { enabled: true, engine: 'auto' }]);
     await ctx.call('agent-sessions');
     assert.equal(ctx.sessionReads.at(-1).includeContext, undefined, 'the window never receives conversation excerpts, even with reasoning on');
     assert.equal(ctx.names.calls.at(-1)[0], 'decorate', 'the window sees Summon names');
@@ -280,7 +281,8 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     const request = { prompt: 'Synthetic evidence', schema: { type: 'object' } };
     await ctx.reasoningOptions.infer('claude', request);
     assert.equal(ctx.inferences.at(-1).engine, 'claude');
-    assert.equal(ctx.inferences.at(-1).request, request);
+    assert.deepEqual(plain(ctx.inferences.at(-1).request), { ...request, claudeModel: 'sonnet', codexModel: 'gpt-6-luna' }, 'the background models ride along with the request');
+    assert.deepEqual(plain(request), { prompt: 'Synthetic evidence', schema: { type: 'object' } }, 'the caller\'s request is not changed');
     assert.equal(ctx.inferences.at(-1).deps.executable, ctx.executable);
     assert.equal(typeof ctx.inferences.at(-1).deps.localModel.health, 'function');
     assert.ok(!Object.values(ctx.rpcOptions).includes(ctx.reasoning), 'no model reasoning service is exposed over RPC/MCP');
@@ -290,6 +292,32 @@ test('main opts into conversation evidence only for reasoning, routes engines an
     for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
   }
   assert.equal(ctx.reasoning.closed, 1, 'shutdown closes the reasoning service');
+});
+
+test('the background models cross IPC only as known keys of the right type and apply from the next reasoning call', async () => {
+  const ctx = await launch();
+  try {
+    assert.deepEqual(plain((await ctx.call('snapshot')).reasoning), { enabled: false, engine: 'auto', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' }, 'Preferences reads the models from the snapshot');
+    const settingsCalls = () => ctx.reasoning.calls.filter(call => call[0] === 'settings').length;
+    const before = settingsCalls();
+    for (const patch of [null, undefined, 'gpt-6-sol', ['gpt-6-sol'], { model: 'gpt-6-sol' }, { codexModel: 6 }, { claudeModel: true }, { codexModel: 'gpt-6-sol', model: 'x' }, { enabled: 'yes' }, { engine: 1 }]) {
+      await assert.rejects(ctx.call('context-reasoning-settings', patch), /Invalid request/, JSON.stringify(patch));
+    }
+    assert.equal(settingsCalls(), before, 'a refused patch never reaches the preferences');
+    await ctx.call('context-reasoning-settings', { codexModel: 'gpt-6-sol', claudeModel: 'opus' });
+    assert.deepEqual(plain(ctx.reasoning.calls.findLast(call => call[0] === 'settings')), ['settings', { codexModel: 'gpt-6-sol', claudeModel: 'opus' }]);
+    const request = { prompt: 'Synthetic evidence', schema: { type: 'object' } };
+    await ctx.reasoningOptions.infer('codex', request);
+    assert.deepEqual(plain(ctx.inferences.at(-1).request), { ...request, claudeModel: 'opus', codexModel: 'gpt-6-sol' });
+    await ctx.namesOptions.infer('claude', request);
+    assert.deepEqual(plain(ctx.inferences.at(-1).request), { ...request, claudeModel: 'opus', codexModel: 'gpt-6-sol' }, 'session names use the same models');
+    ctx.reasoning.stored.codexModel = 'default';
+    await ctx.reasoningOptions.infer('codex', request);
+    assert.equal(ctx.inferences.at(-1).request.codexModel, 'default', 'read as each call starts');
+  } finally {
+    ctx.app.quit();
+    for (let i = 0; i < 8; i++) await new Promise(resolve => setImmediate(resolve));
+  }
 });
 
 test('main names every project\'s sessions with the reasoning setting, engine and pause, one model call at a time, off the socket', async () => {
@@ -334,7 +362,7 @@ test('main names every project\'s sessions with the reasoning setting, engine an
     assert.equal(ctx.inferences.length, 1, 'one model call at a time');
     release(); await naming; await goals;
     assert.equal(ctx.inferences.length, 2);
-    assert.equal(ctx.inferences[0].request, request);
+    assert.deepEqual(plain(ctx.inferences[0].request), { ...request, claudeModel: 'sonnet', codexModel: 'gpt-6-luna' });
     assert.equal(typeof ctx.inferences[0].deps.localModel.health, 'function');
 
     ctx.names.error = 'The local model is unavailable. Start its local service to name sessions.';

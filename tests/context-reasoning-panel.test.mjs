@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import vm from 'node:vm';
 import ts from 'typescript';
+import { REASONING_CLAUDE_MODELS, REASONING_CODEX_MODELS } from '../src/core/context-reasoning.mjs';
 
 const require = createRequire(import.meta.url);
 const React = require('react');
@@ -12,7 +13,7 @@ const source = await readFile(new URL('../src/renderer/ContextReasoningPanel.tsx
 const { outputText } = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true } });
 const module = { exports: {} };
 vm.runInThisContext(`(function(require, exports, module) {${outputText}\n})`)(require, module.exports, module);
-const { ContextReasoningPanel, ReasoningEvidence } = module.exports;
+const { ContextReasoningPanel, ReasoningEvidence, BackgroundReasoningPreferences, modelName } = module.exports;
 const view = { settings: { enabled: true, engine: 'auto' }, status: 'ready', updatedAt: '2026-09-20T10:00:00Z', engine: 'local', model: 'current-model', error: null, summary: 'Finish the accessible preview.', goals: [], stale: false };
 const render = (value, props = {}) => renderToStaticMarkup(React.createElement(ContextReasoningPanel, { value, scope: null, busy: false, error: '', available: true, onRefresh() {}, onSettings() {}, ...props }));
 
@@ -114,4 +115,53 @@ test('a free-form model summary cannot contradict a saved pending follow-up', ()
   assert.match(html, /Follow up with Professor Rivera/);
   assert.match(html, /Review the unsent draft/);
   assert.doesNotMatch(html, /draft was sent|Inferred direction/);
+});
+
+test('Preferences lists the background reasoning models and marks the saved ones', () => {
+  const changes = [];
+  const renderPreferences = props => renderToStaticMarkup(React.createElement(BackgroundReasoningPreferences, { settings: { enabled: true, engine: 'auto', claudeModel: 'haiku', codexModel: 'gpt-6-sol' }, disabled: false, onChange: patch => changes.push(patch), ...props }));
+  const html = renderPreferences();
+  assert.match(html, /Background reasoning/);
+  assert.match(html, /aria-label="Claude model for background reasoning"/);
+  assert.match(html, /aria-label="Codex model for background reasoning"/);
+  const options = name => [...html.split(`aria-label="${name} model for background reasoning"`)[1].split('</select>')[0].matchAll(/<option value="([^"]+)"( selected="")?>([^<]+)<\/option>/g)].map(([, value, selected, label]) => ({ value, label, selected: Boolean(selected) }));
+  assert.deepEqual(options('Claude'), [{ value: 'sonnet', label: 'Sonnet', selected: false }, { value: 'haiku', label: 'Haiku', selected: true }, { value: 'opus', label: 'Opus', selected: false }]);
+  assert.deepEqual(options('Codex'), [{ value: 'gpt-6-luna', label: 'GPT-6-Luna — fast and affordable', selected: false }, { value: 'gpt-6-sol', label: 'GPT-6-Sol', selected: true }, { value: 'gpt-6-astra', label: 'GPT-6-Astra', selected: false }, { value: 'default', label: 'Codex’s own default', selected: false }]);
+  assert.match(html, /goals and session names whenever Reason with, in the Goals panel, picks Claude or Codex, including through Auto/);
+  assert.doesNotMatch(html, /disabled=""/);
+  assert.equal((renderPreferences({ disabled: true }).match(/disabled=""/g) || []).length, 2);
+  const missing = renderPreferences({ settings: undefined });
+  assert.equal((missing.match(/disabled=""/g) || []).length, 2, 'no preferences to change without goal reasoning');
+  assert.match(missing, /<option value="sonnet" selected="">/);
+  assert.match(missing, /<option value="gpt-6-luna" selected="">/);
+  assert.match(missing, /not available right now/);
+  assert.deepEqual(changes, [], 'rendering changes nothing');
+});
+
+test('Preferences offers exactly the models core accepts, and the preview shows the section as it is', async () => {
+  const html = renderToStaticMarkup(React.createElement(BackgroundReasoningPreferences, { settings: { enabled: true, engine: 'auto', claudeModel: 'sonnet', codexModel: 'gpt-6-luna' }, disabled: false, onChange() {} }));
+  const values = name => [...html.split(`aria-label="${name} model for background reasoning"`)[1].split('</select>')[0].matchAll(/<option value="([^"]+)"/g)].map(match => match[1]).sort();
+  assert.deepEqual(values('Claude'), [...REASONING_CLAUDE_MODELS].sort());
+  assert.deepEqual(values('Codex'), [...REASONING_CODEX_MODELS].sort());
+  // The browser preview carries the preferences too, so the section is shown with its selects disabled, not as missing.
+  const previewSource = await readFile(new URL('../src/renderer/preview.ts', import.meta.url), 'utf8');
+  const previewModule = { exports: {} };
+  vm.runInThisContext(`(function(require, exports, module) {${ts.transpileModule(previewSource, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS } }).outputText}\n})`)(require, previewModule.exports, previewModule);
+  const saved = previewModule.exports.previewSnapshot.reasoning;
+  assert.ok(REASONING_CLAUDE_MODELS.includes(saved?.claudeModel) && REASONING_CODEX_MODELS.includes(saved?.codexModel), JSON.stringify(saved));
+  const shown = renderToStaticMarkup(React.createElement(BackgroundReasoningPreferences, { settings: saved, disabled: true, onChange() {} }));
+  assert.doesNotMatch(shown, /not available right now/);
+  assert.equal((shown.match(/disabled=""/g) || []).length, 2);
+});
+
+test('the status line names the model a reading reports, in short form', () => {
+  assert.equal(modelName('gpt-6-luna'), 'GPT-6-Luna');
+  assert.equal(modelName('sonnet'), 'Sonnet');
+  assert.equal(modelName('current-model'), 'current-model');
+  assert.equal(modelName('constructor'), 'constructor');
+  assert.match(render({ ...view, engine: 'codex', model: 'gpt-6-luna' }), /Codex · GPT-6-Luna/);
+  assert.match(render({ ...view, engine: 'claude', model: 'sonnet' }), /Claude · Sonnet/);
+  assert.match(render({ ...view, engine: 'codex', model: null }), />Codex<\/span>/);
+  const evidence = renderToStaticMarkup(React.createElement(ReasoningEvidence, { inference: { summary: 'Why', evidence: [], confidence: 'medium', engine: 'codex', model: 'gpt-6-astra', updatedAt: '2026-09-20T10:00:00Z' } }));
+  assert.match(evidence, /medium confidence · Codex · GPT-6-Astra/);
 });
